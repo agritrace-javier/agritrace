@@ -1,50 +1,94 @@
-# Welcome to your Expo app 👋
+# AgriTrace
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+AgriTrace is a blockchain-based traceability application designed to bring transparency, trust, and verification to agricultural products using QR codes and Starknet.
 
-## Get started
+---
 
-1. Install dependencies
+## Overview
 
-   ```bash
-   npm install
-   ```
+AgriTrace allows producers to register agricultural product lots and generate QR codes that consumers can scan to verify origin, product details, and integrity.  
+The system is designed for regions where trust, export validation, and product authenticity are critical, such as coffee, cacao, mango, and hibiscus supply chains.
 
-2. Start the app
+---
 
-   ```bash
-   npx expo start
-   ```
+## Problem
 
-In the output, you'll find options to open the app in a
+Agricultural supply chains suffer from:
+- Lack of transparency
+- Manual and unverifiable records
+- Fraud in origin and labeling
+- No consumer-level verification
 
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
+Small and medium producers have no affordable way to prove authenticity or track product history.
 
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
+---
 
-## Get a fresh project
+## Solution
 
-When you're ready, run:
+AgriTrace provides:
+- Lot creation and management by producers
+- Deterministic hashing of lot data
+- QR codes linked to verifiable records
+- On-chain verification via Starknet (simulation-ready)
+
+This creates an immutable, auditable trail from producer to consumer.
+
+---
+
+## How It Works
+
+1. Producer creates a product lot inside the app
+2. Lot data is normalized and hashed
+3. A QR code is generated for the lot
+4. Consumers scan the QR code
+5. The app verifies the lot data against Starknet
+
+---
+
+## Starknet Integration
+
+AgriTrace is built with Starknet as the verification layer.
+
+Current MVP includes:
+- Deterministic lot hashing
+- Starknet transaction simulation
+- Network abstraction (Sepolia / Mainnet ready)
+- Transaction hash and block metadata display
+
+The architecture is designed to support:
+- Cairo smart contracts for lot registration
+- Low-cost verification transactions
+- Public auditability
+
+---
+
+## MVP Status
+
+✅ Expo mobile app (Android / iOS)  
+✅ Lot catalog and detail view  
+✅ QR code generation and scanning  
+✅ Local persistence  
+✅ Starknet verification simulation  
+
+⏳ On-chain contract deployment (next phase)
+
+---
+
+## Tech Stack
+
+- React Native (Expo)
+- TypeScript
+- Starknet (simulation layer)
+- QR scanning
+- Local storage abstraction
+- Deterministic hashing
+
+---
+
+## Getting Started
 
 ```bash
-npm run reset-project
-```
-
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
-
-## Learn more
-
-To learn more about developing your project with Expo, look at the following resources:
-
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
-
-## Join the community
-
-Join our community of developers creating universal apps.
-
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+git clone https://github.com/agritrace-javier/agritrace.git
+cd agritrace
+npm install
+npx expo start
