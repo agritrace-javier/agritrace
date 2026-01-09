@@ -1,76 +1,85 @@
 # AgriTrace
 
-AgriTrace is a blockchain-based traceability application designed to bring transparency, trust, and verification to agricultural products using QR codes and Starknet.
+AgriTrace is a blockchain-based traceability application designed to provide verifiable transparency for agricultural products using QR codes and Starknet.
 
 ---
 
 ## Overview
 
-AgriTrace allows producers to register agricultural product lots and generate QR codes that consumers can scan to verify origin, product details, and integrity.  
-The system is designed for regions where trust, export validation, and product authenticity are critical, such as coffee, cacao, mango, and hibiscus supply chains.
+AgriTrace enables agricultural producers to register product lots and generate QR codes that allow consumers and buyers to verify origin, product data, and integrity.
+
+The system is designed for supply chains where trust, export validation, and authenticity are critical, such as coffee, cacao, mango, and hibiscus production.
 
 ---
 
 ## Problem
 
-Agricultural supply chains suffer from:
-- Lack of transparency
-- Manual and unverifiable records
-- Fraud in origin and labeling
-- No consumer-level verification
+Agricultural supply chains face several structural issues:
 
-Small and medium producers have no affordable way to prove authenticity or track product history.
+- Limited transparency across production and distribution
+- Reliance on manual or unverifiable records
+- Fraud related to origin and labeling
+- Lack of consumer-accessible verification mechanisms
+
+Small and medium producers often lack affordable tools to prove authenticity and product history.
 
 ---
 
 ## Solution
 
-AgriTrace provides:
-- Lot creation and management by producers
-- Deterministic hashing of lot data
-- QR codes linked to verifiable records
-- On-chain verification via Starknet (simulation-ready)
+AgriTrace provides a traceability system that includes:
 
-This creates an immutable, auditable trail from producer to consumer.
+- Product lot creation and management
+- Deterministic hashing of lot metadata
+- QR codes linked to verifiable records
+- Blockchain-based verification using Starknet
+
+This approach creates an immutable and auditable trail from producer to end consumer.
 
 ---
 
 ## How It Works
 
-1. Producer creates a product lot inside the app
-2. Lot data is normalized and hashed
+1. A producer creates a product lot within the application
+2. Lot data is normalized and hashed deterministically
 3. A QR code is generated for the lot
-4. Consumers scan the QR code
-5. The app verifies the lot data against Starknet
+4. A consumer scans the QR code
+5. The application verifies the data against Starknet records
 
 ---
 
 ## Starknet Integration
 
-AgriTrace is built with Starknet as the verification layer.
+AgriTrace uses Starknet as the verification and settlement layer.
 
-Current MVP includes:
-- Deterministic lot hashing
+The current MVP includes:
+
+- Deterministic hashing of lot data
 - Starknet transaction simulation
-- Network abstraction (Sepolia / Mainnet ready)
-- Transaction hash and block metadata display
+- Network abstraction for Sepolia and Mainnet
+- Display of transaction hashes and block metadata
 
 The architecture is designed to support:
+
 - Cairo smart contracts for lot registration
 - Low-cost verification transactions
-- Public auditability
+- Public and permissionless auditability
 
 ---
 
 ## MVP Status
 
-✅ Expo mobile app (Android / iOS)  
-✅ Lot catalog and detail view  
-✅ QR code generation and scanning  
-✅ Local persistence  
-✅ Starknet verification simulation  
+The current MVP includes:
 
-⏳ On-chain contract deployment (next phase)
+- Expo-based mobile application (Android and iOS)
+- Product lot catalog and detail views
+- QR code generation and scanning
+- Local persistence layer
+- Starknet verification simulation
+
+Planned next phase:
+
+- On-chain contract deployment on Starknet
 
 ---
 
@@ -78,8 +87,8 @@ The architecture is designed to support:
 
 - React Native (Expo)
 - TypeScript
-- Starknet (simulation layer)
-- QR scanning
+- Starknet
+- QR code scanning
 - Local storage abstraction
 - Deterministic hashing
 
