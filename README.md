@@ -1,103 +1,101 @@
 # AgriTrace
 
-AgriTrace is a blockchain-based traceability application designed to provide verifiable transparency for agricultural products using QR codes and Starknet.
+AgriTrace is a real-time agricultural traceability MVP designed to provide verifiable transparency for product lots across web and mobile clients, using Supabase as the source of truth and Starknet for integrity proofs.
+
+The system enables producers, operators, and buyers to create, verify, and audit agricultural lots with synchronized data, photo evidence, and blockchain-aligned verification.
 
 ---
 
 ## Overview
 
-AgriTrace enables agricultural producers to register product lots and generate QR codes that allow consumers and buyers to verify origin, product data, and integrity.
+AgriTrace addresses trust and transparency gaps in agricultural supply chains by enabling:
 
-The system is designed for supply chains where trust, export validation, and authenticity are critical, such as coffee, cacao, mango, and hibiscus production.
+- Real-time lot creation and updates  
+- Multi-device synchronization (Web + Mobile)  
+- Verifiable photo evidence linked to each lot  
+- Deterministic hashing and blockchain-aligned integrity proofs  
+
+The platform is designed for export-oriented and trust-sensitive products such as coffee, cacao, mango, and hibiscus, where origin, authenticity, and auditability are critical.
 
 ---
 
 ## Problem
 
-Agricultural supply chains face several structural issues:
+Agricultural supply chains face persistent structural challenges:
 
-- Limited transparency across production and distribution
-- Reliance on manual or unverifiable records
-- Fraud related to origin and labeling
-- Lack of consumer-accessible verification mechanisms
+- Fragmented and manual record-keeping  
+- Limited real-time visibility across stakeholders  
+- High risk of origin and labeling fraud  
+- Lack of affordable verification tools for small and medium producers  
+- Consumer-facing QR codes that link to unverifiable or mutable data  
 
-Small and medium producers often lack affordable tools to prove authenticity and product history.
+These issues reduce trust, limit export opportunities, and disadvantage small producers.
 
 ---
 
 ## Solution
 
-AgriTrace provides a traceability system that includes:
+AgriTrace provides a unified traceability system where:
 
-- Product lot creation and management
-- Deterministic hashing of lot metadata
-- QR codes linked to verifiable records
-- Blockchain-based verification using Starknet
+- Product lots are created and managed in a single source of truth (Supabase)  
+- All clients stay synchronized in real time (Supabase Realtime)  
+- Photo evidence is uploaded to cloud storage and linked directly to lots  
+- Lot data is normalized and deterministically hashed  
+- Hashes can be anchored to Starknet for tamper-evident verification  
 
-This approach creates an immutable and auditable trail from producer to end consumer.
+This creates a transparent, auditable trail from production to consumption.
+
+---
+
+## Architecture (High-Level)
+
+- **Supabase Postgres**  
+  Acts as the canonical source of truth for all lot data.
+
+- **Supabase Realtime**  
+  Broadcasts INSERT / UPDATE / DELETE events to all connected clients.
+
+- **Supabase Storage**  
+  Stores photo evidence linked to each lot (`photos[]`).
+
+- **Web + Mobile Clients (Expo)**  
+  Operators and users interact with the same synchronized dataset.
+
+- **Starknet (MVP / Simulation)**  
+  Deterministic lot hashes are prepared for anchoring on Starknet to ensure integrity and auditability.
 
 ---
 
 ## How It Works
 
-1. A producer creates a product lot within the application
-2. Lot data is normalized and hashed deterministically
-3. A QR code is generated for the lot
-4. A consumer scans the QR code
-5. The application verifies the data against Starknet records
+1. A product lot is created on Web or Mobile  
+2. Lot data is normalized and stored in Supabase (source of truth)  
+3. Changes propagate instantly via Supabase Realtime  
+4. Photos are uploaded to Supabase Storage and referenced in the lot record  
+5. A deterministic hash of the lot payload is generated  
+6. (MVP) The hash is simulated for Starknet anchoring  
+7. (Next Phase) The hash is committed on-chain via Starknet smart contracts  
+8. Consumers or auditors verify the lot via QR code  
 
 ---
 
-## Starknet Integration
+## Current MVP Capabilities (Implemented)
 
-AgriTrace uses Starknet as the verification and settlement layer.
+✔ Web application (Expo / React Native Web)  
+✔ Mobile application (Android / iOS via Expo Go)  
+✔ Real-time synchronization between all clients  
+✔ Supabase as a single source of truth  
+✔ CRUD operations for product lots  
+✔ Photo uploads with cloud persistence  
+✔ `photos[]` linked directly to lot records  
+✔ Deterministic hashing of lot metadata  
+✔ Starknet transaction simulation (Sepolia / Mainnet abstraction)  
 
-The current MVP includes:
-
-- Deterministic hashing of lot data
-- Starknet transaction simulation
-- Network abstraction for Sepolia and Mainnet
-- Display of transaction hashes and block metadata
-
-The architecture is designed to support:
-
-- Cairo smart contracts for lot registration
-- Low-cost verification transactions
-- Public and permissionless auditability
+This MVP demonstrates end-to-end data flow, synchronization, and verification readiness.
 
 ---
 
-## MVP Status
+## Demo & Proof
 
-The current MVP includes:
+A full demo script and proof artifacts are available in the repository:
 
-- Expo-based mobile application (Android and iOS)
-- Product lot catalog and detail views
-- QR code generation and scanning
-- Local persistence layer
-- Starknet verification simulation
-
-Planned next phase:
-
-- On-chain contract deployment on Starknet
-
----
-
-## Tech Stack
-
-- React Native (Expo)
-- TypeScript
-- Starknet
-- QR code scanning
-- Local storage abstraction
-- Deterministic hashing
-
----
-
-## Getting Started
-
-```bash
-git clone https://github.com/agritrace-javier/agritrace.git
-cd agritrace
-npm install
-npx expo start
