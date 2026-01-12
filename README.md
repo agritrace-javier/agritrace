@@ -1,47 +1,50 @@
 # AgriTrace
 
-AgriTrace is a real-time agricultural traceability MVP designed to provide verifiable transparency for product lots across web and mobile clients, using Supabase as the source of truth and Starknet for integrity proofs.
+AgriTrace is a **real-time agricultural traceability MVP** that provides **verifiable transparency and auditability** for agricultural product lots across **Web and Mobile clients**, using **Supabase as the canonical source of truth** and **Starknet as the integrity verification layer**.
 
-The system enables producers, operators, and buyers to create, verify, and audit agricultural lots with synchronized data, photo evidence, and blockchain-aligned verification.
+The platform enables producers, operators, buyers, and auditors to create, track, and verify agricultural lots with synchronized data, photo evidence, and blockchain-aligned integrity proofs.
 
 ---
 
 ## Overview
 
-AgriTrace addresses trust and transparency gaps in agricultural supply chains by enabling:
+Agricultural supply chains—especially in export-oriented markets—suffer from fragmented data, unverifiable records, and weak trust guarantees.
+
+AgriTrace addresses these challenges by enabling:
 
 - Real-time lot creation and updates  
 - Multi-device synchronization (Web + Mobile)  
 - Verifiable photo evidence linked to each lot  
-- Deterministic hashing and blockchain-aligned integrity proofs  
+- Deterministic hashing of normalized lot data  
+- Blockchain-aligned integrity proofs  
 
-The platform is designed for export-oriented and trust-sensitive products such as coffee, cacao, mango, and hibiscus, where origin, authenticity, and auditability are critical.
+The system is designed for **trust-sensitive agricultural products** such as coffee, cacao, mango, hibiscus, and similar commodities where **origin, authenticity, and auditability** are critical.
 
 ---
 
 ## Problem
 
-Agricultural supply chains face persistent structural challenges:
+Agricultural traceability systems face persistent structural issues:
 
 - Fragmented and manual record-keeping  
-- Limited real-time visibility across stakeholders  
+- Lack of real-time visibility across stakeholders  
 - High risk of origin and labeling fraud  
-- Lack of affordable verification tools for small and medium producers  
-- Consumer-facing QR codes that link to unverifiable or mutable data  
+- Expensive or inaccessible verification tools for small and medium producers  
+- Consumer-facing QR codes that link to mutable or unverifiable data  
 
-These issues reduce trust, limit export opportunities, and disadvantage small producers.
+These limitations reduce trust, restrict export opportunities, and disproportionately impact small producers.
 
 ---
 
 ## Solution
 
-AgriTrace provides a unified traceability system where:
+AgriTrace provides a unified, real-time traceability system where:
 
-- Product lots are created and managed in a single source of truth (Supabase)  
-- All clients stay synchronized in real time (Supabase Realtime)  
-- Photo evidence is uploaded to cloud storage and linked directly to lots  
-- Lot data is normalized and deterministically hashed  
-- Hashes can be anchored to Starknet for tamper-evident verification  
+- Product lots are created and managed in a **single source of truth (Supabase Postgres)**  
+- All connected clients remain synchronized via **Supabase Realtime**  
+- Photo evidence is uploaded to **cloud storage** and cryptographically linked to lots  
+- Lot payloads are **normalized and deterministically hashed**  
+- Hashes can be **anchored to Starknet** to ensure tamper-evident verification  
 
 This creates a transparent, auditable trail from production to consumption.
 
@@ -50,7 +53,7 @@ This creates a transparent, auditable trail from production to consumption.
 ## Architecture (High-Level)
 
 - **Supabase Postgres**  
-  Acts as the canonical source of truth for all lot data.
+  Canonical source of truth for all lot data.
 
 - **Supabase Realtime**  
   Broadcasts INSERT / UPDATE / DELETE events to all connected clients.
@@ -59,10 +62,10 @@ This creates a transparent, auditable trail from production to consumption.
   Stores photo evidence linked to each lot (`photos[]`).
 
 - **Web + Mobile Clients (Expo)**  
-  Operators and users interact with the same synchronized dataset.
+  Operators interact with the same synchronized dataset across platforms.
 
 - **Starknet (MVP / Simulation)**  
-  Deterministic lot hashes are prepared for anchoring on Starknet to ensure integrity and auditability.
+  Deterministic lot hashes are prepared for anchoring on Starknet to provide integrity guarantees.
 
 ---
 
@@ -79,23 +82,71 @@ This creates a transparent, auditable trail from production to consumption.
 
 ---
 
-## Current MVP Capabilities (Implemented)
+## Current MVP Capabilities
 
-✔ Web application (Expo / React Native Web)  
-✔ Mobile application (Android / iOS via Expo Go)  
-✔ Real-time synchronization between all clients  
-✔ Supabase as a single source of truth  
-✔ CRUD operations for product lots  
-✔ Photo uploads with cloud persistence  
-✔ `photos[]` linked directly to lot records  
-✔ Deterministic hashing of lot metadata  
-✔ Starknet transaction simulation (Sepolia / Mainnet abstraction)  
+- Web application (Expo / React Native Web)  
+- Mobile application (Android / iOS via Expo Go)  
+- Real-time synchronization across all clients  
+- Supabase as a single source of truth  
+- Full CRUD operations for product lots  
+- Photo uploads with cloud persistence  
+- `photos[]` array linked directly to lot records  
+- Deterministic hashing of lot metadata  
+- Starknet transaction simulation (integrity preview)  
 
-This MVP demonstrates end-to-end data flow, synchronization, and verification readiness.
+This MVP demonstrates **end-to-end data flow**, **real-time synchronization**, and **verification readiness**.
 
 ---
 
 ## Demo & Proof
 
-A full demo script and proof artifacts are available in the repository:
+Demo and verification assets are included in the repository:
 
+- `demo/demo-script.md` – Step-by-step demo recording guide  
+- `demo/screenshots/`  
+  - `supabase-lots.png`  
+  - `storage-lot-photos.png`  
+  - `mobile-catalog.png`  
+
+A short demo video (3–5 minutes) can be recorded following the demo script if requested by reviewers.
+
+---
+
+## Project Status
+
+- MVP complete and functional  
+- Real-time sync verified across Web and Mobile  
+- Photo evidence pipeline operational  
+- Deterministic hashing implemented  
+- Starknet grant **pre-screening passed**  
+
+AgriTrace is currently **grant-ready** and prepared for on-chain expansion.
+
+---
+
+## Roadmap
+
+### Phase 1 (Completed)
+- Supabase-backed real-time traceability MVP  
+- Web + Mobile clients  
+- Photo evidence and deterministic hashing  
+
+### Phase 2 (Post-Grant)
+- Starknet Cairo smart contracts for lot hash anchoring  
+- On-chain integrity commitments  
+- Public verification endpoint via QR scanning  
+
+---
+
+## Tech Stack
+
+- React Native (Expo)  
+- TypeScript  
+- Supabase (Postgres, Realtime, Storage)  
+- Starknet (simulation → on-chain verification)  
+
+---
+
+## License
+
+MIT
