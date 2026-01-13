@@ -108,7 +108,16 @@ Demo and verification assets are included in the repository:
   - `storage-lot-photos.png`  
   - `mobile-catalog.png`  
 
-A short demo video (3–5 minutes) can be recorded following the demo script if requested by reviewers.
+### Demo Video (Unlisted)
+
+- **Mobile Demo (YouTube Short)**  
+  https://youtube.com/shorts/tM56PLrSP_M
+
+> This short video demonstrates the AgriTrace mobile client interacting  
+> with the same Supabase-backed dataset used by the web application.  
+> All data shown is persisted in Supabase and synchronized in real time.
+
+*A full Web demo video will be added once processing is complete.*
 
 ---
 
