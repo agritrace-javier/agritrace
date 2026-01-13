@@ -113,11 +113,12 @@ Demo and verification assets are included in the repository:
 - **Mobile Demo (YouTube Short)**  
   https://youtube.com/shorts/tM56PLrSP_M
 
-> This short video demonstrates the AgriTrace mobile client interacting  
-> with the same Supabase-backed dataset used by the web application.  
-> All data shown is persisted in Supabase and synchronized in real time.
+- **Web Demo (YouTube)**  
+  https://youtu.be/HrV_Pe0rn4g
 
-*A full Web demo video will be added once processing is complete.*
+> These videos demonstrate the AgriTrace Web and Mobile clients interacting  
+> with the same Supabase-backed dataset.  
+> All data shown is persisted in Supabase and synchronized in real time.
 
 ---
 
