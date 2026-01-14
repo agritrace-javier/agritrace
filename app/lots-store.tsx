@@ -1,26 +1,33 @@
 // app/lots-store.tsx
-import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
+import React, {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { Lang } from "./i18n";
 import { initialLots, Lot } from "./lots";
 import { storageGet, storageRemove, storageSet } from "./storage";
 import type { ThemeName } from "./theme";
+
+import {
+  deleteLotRemote,
+  fetchLotsRemote,
+  subscribeLotsRemote,
+  uploadLotPhotosIfNeeded,
+  upsertLotRemote,
+} from "./lots-remote";
 
 type Mode = "client" | "operator";
 
 /** ✅ Starknet (Simulated) proof stored per-lot */
 export type LotProof = {
   lotId: string;
-
-  // Hash computed locally (SHA-256)
   hash: string;
-
-  // Simulated Starknet tx
   txHash: string;
-
-  // Simulated block info
   blockNumber: number;
-
-  // Timestamp when proof was created/saved
   ts: number;
 };
 
@@ -33,6 +40,8 @@ type LotsContextValue = {
   getLotById: (id: string) => Lot | undefined;
   resetLots: () => void;
 
+  updateLot: (id: string, patch: Partial<Lot>) => void;
+
   mode: Mode;
   enterOperatorWithPin: (pin: string) => boolean;
   exitToClient: () => void;
@@ -43,7 +52,6 @@ type LotsContextValue = {
   themeName: ThemeName;
   setThemeName: (t: ThemeName) => void;
 
-  /** ✅ Proofs (hash + simulated tx) */
   proofs: ProofStore;
   getProofByLotId: (lotId: string) => LotProof | undefined;
   setProofForLot: (proof: LotProof) => void;
@@ -53,40 +61,95 @@ type LotsContextValue = {
 
 const LotsContext = createContext<LotsContextValue | null>(null);
 
-const STORAGE_KEY_LOTS = "agritrace_lots_v1";
+const STORAGE_KEY_LOTS = "agritrace_lots_v2";
 const STORAGE_KEY_MODE = "agritrace_mode_v1";
 const STORAGE_KEY_LANG = "agritrace_lang_v1";
 const STORAGE_KEY_THEME = "agritrace_theme_v1";
 const STORAGE_KEY_PROOFS = "agritrace_proofs_v1";
 
-// ✅ PIN oficial
+// tombstones for deleted DEMO lots
+const STORAGE_KEY_DELETED_DEMOS = "agritrace_deleted_demo_ids_v1";
+
 const OPERATOR_PIN = "1616";
 
-/**
- * ✅ Merge: si en storage faltan lotes demo, los recupera automáticamente.
- */
-function mergeWithInitialLots(existing: Lot[]) {
-  const map = new Map<string, Lot>();
-  for (const l of existing) map.set(l.id, l);
-
-  // agrega los initialLots que falten
-  for (const base of initialLots) {
-    if (!map.has(base.id)) map.set(base.id, base);
-  }
-
-  // orden: primero lo que ya existía, luego los que faltaban
-  const existingIds = new Set(existing.map((x) => x.id));
-  const missing = initialLots.filter((x) => !existingIds.has(x.id));
-
-  return [...existing, ...missing];
+/** ---------------------------
+ * ✅ Helpers
+ * --------------------------*/
+function s(v: any) {
+  return String(v ?? "").trim();
 }
 
-/**
- * ✅ Acepta 2 formatos:
- * - NUEVO: product_en / product_es
- * - VIEJO: product
- * Siempre devuelve Lot válido (y luego lo completa con initialLots).
- */
+function normalizeId(id: any) {
+  return s(id).toUpperCase();
+}
+
+function normalizePhotos(v: any): string[] | undefined {
+  if (v === undefined) return undefined;
+  if (!Array.isArray(v)) return undefined;
+  const out = v.map((p) => s(p)).filter(Boolean).slice(0, 12);
+  return out.length ? out : [];
+}
+
+function normalizeProductFields(x: any): { product_en: string; product_es: string } {
+  const en = s(x?.product_en);
+  const es = s(x?.product_es);
+
+  const legacy = s(x?.product);
+  const esTypo1 = s(x?.product_ests);
+  const esTypo2 = s(x?.product_est);
+
+  const finalEn = en || legacy || es || esTypo1 || esTypo2;
+  const finalEs = es || esTypo1 || esTypo2 || legacy || en;
+
+  return { product_en: finalEn, product_es: finalEs };
+}
+
+function normalizeCreatedAt(v: any): number {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string") {
+    const n = Number(v);
+    if (Number.isFinite(n)) return n;
+  }
+  return Date.now();
+}
+
+function safeParseStringArray(raw: string | null): string[] {
+  if (!raw) return [];
+  try {
+    const data = JSON.parse(raw);
+    if (!Array.isArray(data)) return [];
+    return data.map((x) => normalizeId(x)).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function isDemoLotId(id: string) {
+  const demoIds = new Set(initialLots.map((x) => normalizeId(x.id)));
+  return demoIds.has(normalizeId(id));
+}
+
+function mergeWithInitialLots(existing: Lot[], deletedDemoIds: Set<string>) {
+  const map = new Map<string, Lot>();
+  for (const l of existing) map.set(normalizeId(l.id), l);
+
+  for (const base of initialLots) {
+    const baseId = normalizeId(base.id);
+    if (deletedDemoIds.has(baseId)) continue;
+    if (!map.has(baseId)) map.set(baseId, base as any);
+  }
+
+  // Keep order: user lots first, then missing demos
+  const existingIds = new Set(existing.map((x) => normalizeId(x.id)));
+  const missing = initialLots.filter((x) => {
+    const id = normalizeId(x.id);
+    if (deletedDemoIds.has(id)) return false;
+    return !existingIds.has(id);
+  });
+
+  return [...existing, ...(missing as any)];
+}
+
 function safeParseLots(raw: string | null): Lot[] {
   if (!raw) return initialLots;
 
@@ -97,22 +160,23 @@ function safeParseLots(raw: string | null): Lot[] {
     const cleaned: Lot[] = data
       .filter((x) => x && typeof x === "object")
       .map((x: any) => {
-        const id = String(x.id ?? "").trim();
-        const origin = String(x.origin ?? "").trim();
-        const harvestDate = String(x.harvestDate ?? "").trim();
-        const batch = String(x.batch ?? "").trim();
+        const id = normalizeId(x.id);
+        if (!id) return null;
 
-        const product_en = x.product_en ? String(x.product_en).trim() : "";
-        const product_es = x.product_es ? String(x.product_es).trim() : "";
-        const legacyProduct = x.product ? String(x.product).trim() : "";
+        const origin = s(x.origin) || "—";
+        const harvestDate = s(x.harvestDate) || "—";
+        const batch = s(x.batch) || "—";
 
-        const finalEn = product_en || legacyProduct || product_es;
-        const finalEs = product_es || legacyProduct || product_en;
+        const { product_en, product_es } = normalizeProductFields(x);
+
+        const finalEn = product_en || "Unknown";
+        const finalEs = product_es || finalEn || "Desconocido";
 
         const notes = x.notes ? String(x.notes) : undefined;
         const rating = typeof x.rating === "number" ? x.rating : undefined;
 
-        if (!id || !origin || !harvestDate || !batch || !finalEn || !finalEs) return null;
+        const createdAt = normalizeCreatedAt(x.createdAt);
+        const photos = normalizePhotos(x.photos);
 
         return {
           id,
@@ -123,14 +187,13 @@ function safeParseLots(raw: string | null): Lot[] {
           product_es: finalEs,
           notes,
           rating,
+          createdAt,
+          photos,
         } as Lot;
       })
       .filter(Boolean) as Lot[];
 
-    if (cleaned.length === 0) return initialLots;
-
-    // ✅ aquí está el fix real
-    return mergeWithInitialLots(cleaned);
+    return cleaned.length ? cleaned : initialLots;
   } catch {
     return initialLots;
   }
@@ -151,7 +214,6 @@ function safeParseTheme(raw: string | null): ThemeName | null {
   return raw === "light" || raw === "dark" ? raw : null;
 }
 
-/** ✅ Proof store parse (safe) */
 function safeParseProofs(raw: string | null): ProofStore {
   if (!raw) return {};
   try {
@@ -161,9 +223,9 @@ function safeParseProofs(raw: string | null): ProofStore {
     const out: ProofStore = {};
     for (const [k, v] of Object.entries(obj)) {
       const p: any = v;
-      const lotId = String(p?.lotId ?? k ?? "").trim();
-      const hash = String(p?.hash ?? "").trim();
-      const txHash = String(p?.txHash ?? "").trim();
+      const lotId = normalizeId(p?.lotId ?? k ?? "");
+      const hash = s(p?.hash);
+      const txHash = s(p?.txHash);
       const blockNumber = Number(p?.blockNumber);
       const ts = Number(p?.ts);
 
@@ -179,42 +241,99 @@ function safeParseProofs(raw: string | null): ProofStore {
   }
 }
 
+function normalizeLotForStore(input: any): Lot | null {
+  const id = normalizeId(input?.id);
+  if (!id) return null;
+
+  const origin = s(input?.origin) || "—";
+  const harvestDate = s(input?.harvestDate) || "—";
+  const batch = s(input?.batch) || "—";
+
+  const { product_en, product_es } = normalizeProductFields(input);
+  const finalEn = product_en || "Unknown";
+  const finalEs = product_es || finalEn || "Desconocido";
+
+  const createdAt = normalizeCreatedAt(input?.createdAt);
+  const photos = normalizePhotos(input?.photos);
+
+  const notes = input?.notes ? String(input.notes) : undefined;
+  const rating = typeof input?.rating === "number" ? input.rating : undefined;
+
+  return {
+    id,
+    origin,
+    harvestDate,
+    batch,
+    product_en: finalEn,
+    product_es: finalEs,
+    notes,
+    rating,
+    createdAt,
+    photos,
+  } as Lot;
+}
+
+function errMsg(e: any) {
+  return String(e?.message ?? e ?? "");
+}
+
 export function LotsProvider({ children }: { children: React.ReactNode }) {
   const [lots, setLots] = useState<Lot[]>(initialLots);
   const [mode, setMode] = useState<Mode>("client");
   const [lang, setLang] = useState<Lang>("en");
   const [themeName, setThemeName] = useState<ThemeName>("dark");
 
-  // ✅ NEW: proofs persisted
   const [proofs, setProofs] = useState<ProofStore>({});
+  const [deletedDemoIds, setDeletedDemoIds] = useState<Set<string>>(new Set());
 
-  // ✅ LOAD (web + mobile)
+  // Keep a ref so realtime + remote sync can access latest tombstones without re-reading storage every time
+  const deletedDemoIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    deletedDemoIdsRef.current = deletedDemoIds;
+  }, [deletedDemoIds]);
+
+  async function loadDeletedDemoSet(): Promise<Set<string>> {
+    const rawDeleted = await storageGet(STORAGE_KEY_DELETED_DEMOS);
+    const deleted = safeParseStringArray(rawDeleted);
+    return new Set(deleted.map((x) => normalizeId(x)));
+  }
+
+  async function syncFromRemote(deletedSet: Set<string>) {
+    const remote = await fetchLotsRemote();
+    const mergedRemote = mergeWithInitialLots(remote, deletedSet);
+    setLots(mergedRemote);
+    // NOTE: storage persistence happens in the lots effect (single place)
+  }
+
+  /** ===========================
+   * ✅ 1) Load local cache first
+   * ✅ 2) Then fetch Supabase and replace (log errors)
+   * ✅ 3) Subscribe realtime (log errors)
+   * =========================== */
   useEffect(() => {
     let mounted = true;
 
     (async () => {
       try {
-        // lots
+        // deleted demos
+        const deletedSet = await loadDeletedDemoSet();
+        if (mounted) setDeletedDemoIds(deletedSet);
+
+        // local lots
         const rawLots = await storageGet(STORAGE_KEY_LOTS);
         const parsedLots = safeParseLots(rawLots);
+        const mergedLocal = mergeWithInitialLots(parsedLots, deletedSet);
+        if (mounted) setLots(mergedLocal);
 
-        if (mounted) {
-          setLots(parsedLots);
-          // ✅ guardamos el “merge” para que ya quede fijo
-          await storageSet(STORAGE_KEY_LOTS, JSON.stringify(parsedLots));
-        }
-
-        // mode
+        // mode/lang/theme
         const rawMode = await storageGet(STORAGE_KEY_MODE);
         const parsedMode = safeParseMode(rawMode);
         if (mounted && parsedMode) setMode(parsedMode);
 
-        // lang
         const rawLang = await storageGet(STORAGE_KEY_LANG);
         const parsedLang = safeParseLang(rawLang);
         if (mounted && parsedLang) setLang(parsedLang);
 
-        // theme
         const rawTheme = await storageGet(STORAGE_KEY_THEME);
         const parsedTheme = safeParseTheme(rawTheme);
         if (mounted && parsedTheme) setThemeName(parsedTheme);
@@ -223,51 +342,197 @@ export function LotsProvider({ children }: { children: React.ReactNode }) {
         const rawProofs = await storageGet(STORAGE_KEY_PROOFS);
         const parsedProofs = safeParseProofs(rawProofs);
         if (mounted) setProofs(parsedProofs);
-      } catch {
-        // ignore
+
+        // ✅ remote fetch (LOG errors)
+        try {
+          await syncFromRemote(deletedSet);
+          console.log("[Supabase fetchLotsRemote] OK");
+        } catch (e) {
+          console.warn("[Supabase fetchLotsRemote] failed:", errMsg(e));
+        }
+      } catch (e) {
+        console.warn("[LotsProvider init] failed:", errMsg(e));
       }
     })();
 
+    // realtime subscription (LOG errors)
+    const unsub = subscribeLotsRemote(async (remoteLots) => {
+      try {
+        const deletedSet = deletedDemoIdsRef.current ?? new Set<string>();
+        const merged = mergeWithInitialLots(remoteLots, deletedSet);
+        setLots(merged);
+        // NOTE: storage persistence happens in the lots effect (single place)
+      } catch (e) {
+        console.warn("[Supabase realtime] failed:", errMsg(e));
+      }
+    });
+
     return () => {
       mounted = false;
+      try {
+        unsub?.();
+      } catch {
+        // ignore
+      }
     };
   }, []);
 
-  // ✅ SAVE lots
+  // SAVE lots cache (single persistence point)
   useEffect(() => {
     storageSet(STORAGE_KEY_LOTS, JSON.stringify(lots));
   }, [lots]);
 
-  // ✅ SAVE mode/lang/theme
+  // SAVE deleted demos
+  useEffect(() => {
+    const arr = Array.from(deletedDemoIds.values());
+    storageSet(STORAGE_KEY_DELETED_DEMOS, JSON.stringify(arr));
+  }, [deletedDemoIds]);
+
+  // SAVE mode/lang/theme
   useEffect(() => {
     storageSet(STORAGE_KEY_MODE, mode);
     storageSet(STORAGE_KEY_LANG, lang);
     storageSet(STORAGE_KEY_THEME, themeName);
   }, [mode, lang, themeName]);
 
-  // ✅ SAVE proofs
+  // SAVE proofs
   useEffect(() => {
     storageSet(STORAGE_KEY_PROOFS, JSON.stringify(proofs));
   }, [proofs]);
 
-  const addLot = (lot: Lot) => setLots((prev) => [lot, ...prev]);
+  /** ===========================
+   * ✅ Remote-aware mutations
+   * =========================== */
 
-  const deleteLot = (id: string) => {
-    setLots((prev) => prev.filter((l) => l.id !== id));
-    // ✅ also remove proof if lot removed
-    setProofs((prev) => {
-      if (!prev[id]) return prev;
-      const next = { ...prev };
-      delete next[id];
-      return next;
+  const addLot = (lot: Lot) => {
+    const normalized = normalizeLotForStore(lot);
+    if (!normalized) return;
+
+    // optimistic local
+    setLots((prev) => {
+      const without = prev.filter((l) => normalizeId(l.id) !== normalizeId(normalized.id));
+      return [normalized, ...without];
     });
+
+    (async () => {
+      try {
+        const deletedSet = deletedDemoIdsRef.current ?? new Set<string>();
+
+        const withUploaded = await uploadLotPhotosIfNeeded(normalized);
+
+        // reflect photo URL changes locally (if any)
+        setLots((prev) =>
+          prev.map((l) =>
+            normalizeId(l.id) === normalizeId(withUploaded.id) ? (withUploaded as any) : l
+          )
+        );
+
+        await upsertLotRemote(withUploaded);
+        console.log("[Supabase addLot/upsert] OK", withUploaded.id);
+
+        // ✅ after remote success, refresh from remote (prevents drift)
+        await syncFromRemote(deletedSet);
+      } catch (e) {
+        console.warn("[Supabase addLot/upsert] failed:", errMsg(e));
+      }
+    })();
   };
 
-  const getLotById = (id: string) => lots.find((l) => l.id === id);
+  const updateLot = (id: string, patch: Partial<Lot>) => {
+    const lotId = normalizeId(id);
+    if (!lotId) return;
+
+    const { id: _ignored, ...safePatch } = (patch ?? {}) as any;
+
+    let nextLot: Lot | null = null;
+
+    // optimistic local
+    setLots((prev) =>
+      prev.map((l) => {
+        if (normalizeId(l.id) !== lotId) return l;
+        const merged = { ...l, ...safePatch, id: l.id };
+        const normalized = normalizeLotForStore(merged) ?? l;
+        nextLot = normalized;
+        return normalized;
+      })
+    );
+
+    (async () => {
+      try {
+        if (!nextLot) return;
+
+        const deletedSet = deletedDemoIdsRef.current ?? new Set<string>();
+
+        const withUploaded = await uploadLotPhotosIfNeeded(nextLot);
+
+        setLots((prev) =>
+          prev.map((l) => (normalizeId(l.id) === lotId ? (withUploaded as any) : l))
+        );
+
+        await upsertLotRemote(withUploaded);
+        console.log("[Supabase updateLot/upsert] OK", withUploaded.id);
+
+        // ✅ refresh
+        await syncFromRemote(deletedSet);
+      } catch (e) {
+        console.warn("[Supabase updateLot/upsert] failed:", errMsg(e));
+      }
+    })();
+  };
+
+  const deleteLot = (id: string) => {
+    const lotId = normalizeId(id);
+    if (!lotId) return;
+
+    // demo tombstone
+    if (isDemoLotId(lotId)) {
+      setDeletedDemoIds((prev) => {
+        const next = new Set(prev);
+        next.add(lotId);
+        return next;
+      });
+    }
+
+    // optimistic local
+    setLots((prev) => prev.filter((l) => normalizeId(l.id) !== lotId));
+
+    // clear proof local
+    setProofs((prev) => {
+      if (!prev[lotId]) return prev;
+      const next = { ...prev };
+      delete next[lotId];
+      return next;
+    });
+
+    (async () => {
+      try {
+        const deletedSet = deletedDemoIdsRef.current ?? new Set<string>();
+
+        await deleteLotRemote(lotId);
+        console.log("[Supabase deleteLot] OK", lotId);
+
+        // ✅ refresh
+        await syncFromRemote(deletedSet);
+      } catch (e) {
+        console.warn("[Supabase deleteLot] failed:", errMsg(e));
+      }
+    })();
+  };
+
+  const getLotById = (id: string) => {
+    const lotId = normalizeId(id);
+    return lots.find((l) => normalizeId(l.id) === lotId);
+  };
 
   const resetLots = () => {
     setLots(initialLots);
     storageRemove(STORAGE_KEY_LOTS);
+
+    setProofs({});
+    storageRemove(STORAGE_KEY_PROOFS);
+
+    setDeletedDemoIds(new Set());
+    storageRemove(STORAGE_KEY_DELETED_DEMOS);
   };
 
   const enterOperatorWithPin = (pin: string) => {
@@ -280,19 +545,19 @@ export function LotsProvider({ children }: { children: React.ReactNode }) {
 
   const exitToClient = () => setMode("client");
 
-  // ✅ proofs helpers
-  const getProofByLotId = (lotId: string) => proofs[lotId];
+  // proofs helpers
+  const getProofByLotId = (lotId: string) => proofs[normalizeId(lotId)];
 
   const setProofForLot = (proof: LotProof) => {
-    const lotId = String(proof?.lotId ?? "").trim();
+    const lotId = normalizeId(proof?.lotId);
     if (!lotId) return;
 
     setProofs((prev) => ({
       ...prev,
       [lotId]: {
         lotId,
-        hash: String(proof.hash ?? "").trim(),
-        txHash: String(proof.txHash ?? "").trim(),
+        hash: s(proof.hash),
+        txHash: s(proof.txHash),
         blockNumber: Number(proof.blockNumber),
         ts: Number(proof.ts),
       },
@@ -300,7 +565,7 @@ export function LotsProvider({ children }: { children: React.ReactNode }) {
   };
 
   const clearProofForLot = (lotId: string) => {
-    const id = String(lotId ?? "").trim();
+    const id = normalizeId(lotId);
     if (!id) return;
 
     setProofs((prev) => {
@@ -323,11 +588,16 @@ export function LotsProvider({ children }: { children: React.ReactNode }) {
       deleteLot,
       getLotById,
       resetLots,
+
+      updateLot,
+
       mode,
       enterOperatorWithPin,
       exitToClient,
+
       lang,
       setLang,
+
       themeName,
       setThemeName,
 
@@ -348,5 +618,3 @@ export function useLots() {
   if (!ctx) throw new Error("useLots must be used inside LotsProvider");
   return ctx;
 }
-
-

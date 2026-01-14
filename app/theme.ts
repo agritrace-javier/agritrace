@@ -8,6 +8,12 @@ export function getTheme(theme: ThemeName) {
     isDark,
     colors: {
       green: "#2E7D32",
+
+      // ✅ Added for status badges (Catalog / Lot detail)
+      yellow: isDark ? "#FBBF24" : "#B45309",
+      red: isDark ? "#EF4444" : "#B91C1C",
+      dangerBg: isDark ? "#2A1111" : "#FEE2E2",
+
       bg: isDark ? "#0B1220" : "#F3F5F7",
       card: isDark ? "#111827" : "#FFFFFF",
       text: isDark ? "#E5E7EB" : "#0F172A",
@@ -19,4 +25,3 @@ export function getTheme(theme: ThemeName) {
     },
   });
 }
-

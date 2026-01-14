@@ -1,6 +1,6 @@
 // app/catalog.tsx
 import { useRouter } from "expo-router";
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
     Alert,
     Image,
@@ -11,14 +11,31 @@ import {
     Text,
     View,
 } from "react-native";
+import { computeLotHash } from "./hash";
 import type { Lang } from "./i18n";
 import { t as I18N } from "./i18n";
+import type { Lot } from "./lots";
 import { getProductLabel } from "./lots";
 import { useLots } from "./lots-store";
 import { getLotThumbnail } from "./product-photos";
 import { getTheme } from "./theme";
 
 type TT = (typeof I18N)[Lang];
+type VerifyState = "not_verified" | "verified" | "tampered" | "checking";
+
+function safeString(v: any) {
+  return String(v ?? "").trim();
+}
+
+// ✅ RN Web event helper (best effort)
+function stopEvt(e: any) {
+  try {
+    e?.preventDefault?.();
+  } catch {}
+  try {
+    e?.stopPropagation?.();
+  } catch {}
+}
 
 export default function CatalogScreen() {
   const router = useRouter();
@@ -30,7 +47,7 @@ export default function CatalogScreen() {
     lang,
     themeName,
 
-    // ✅ proofs
+    proofs,
     getProofByLotId,
     clearProofForLot,
   } = useLots();
@@ -43,27 +60,52 @@ export default function CatalogScreen() {
 
   const isOperator = mode === "operator";
 
-  // Local strings just for the badge / clear action (safe if i18n doesn't have them)
   const v = useMemo(() => {
     if (lang === "es") {
       return {
-        verified: "Verificado ✓",
+        verified: "Verificado",
+        notVerified: "No verificado",
+        tampered: "Alterado",
+        checking: "Verificando…",
+
         clear: "Quitar",
         clearTitle: "Quitar verificación",
         clearBody: "Esto borrará el proof guardado para este lote. ¿Seguro?",
         cancel: "Cancelar",
         ok: "Sí, quitar",
         cleared: "Verificación borrada",
+
+        img: "IMG",
+
+        // ✅ delete strings fallback
+        delTitle: "Borrar lote",
+        delBody: "¿Seguro que quieres borrar este lote?",
+        delYes: "Sí, borrar",
+        delNo: "Cancelar",
+        delDone: "Lote borrado",
       };
     }
     return {
-      verified: "Verified ✓",
+      verified: "Verified",
+      notVerified: "Not Verified",
+      tampered: "Tampered",
+      checking: "Checking…",
+
       clear: "Clear",
       clearTitle: "Clear verification",
       clearBody: "This will delete the saved proof for this lot. Are you sure?",
       cancel: "Cancel",
       ok: "Yes, clear",
       cleared: "Verification cleared",
+
+      img: "IMG",
+
+      // ✅ delete strings fallback
+      delTitle: "Delete lot",
+      delBody: "Are you sure you want to delete this lot?",
+      delYes: "Yes, delete",
+      delNo: "Cancel",
+      delDone: "Lot deleted",
     };
   }, [lang]);
 
@@ -72,27 +114,55 @@ export default function CatalogScreen() {
   };
 
   const onGoCreate = () => {
-    if (mode !== "operator") return;
+    if (!isOperator) return;
     router.push("/create-lot");
   };
 
-  const onDelete = (id: string) => {
-    if (mode !== "operator") return;
+  const onDelete = async (id: string) => {
+    if (!isOperator) return;
 
-    Alert.alert(tt.deleteLotQ, `${tt.deleteLotBody} ${id}`, [
-      { text: tt.cancel, style: "cancel" },
+    // Prefer your i18n if exists; otherwise fall back
+    const title = (tt as any)?.deleteLotQ || v.delTitle;
+    const bodyBase = (tt as any)?.deleteLotBody || v.delBody;
+    const cancelText = (tt as any)?.cancel || v.delNo;
+    const deleteText = (tt as any)?.delete || v.delYes;
+    const deletedText = (tt as any)?.deleted || v.delDone;
+    const removedFromCatalog = (tt as any)?.removedFromCatalog || "";
+
+    // ✅ WEB: Use native confirm (Alert.alert is unreliable on web)
+    if (Platform.OS === "web") {
+      // @ts-ignore
+      const ok = globalThis?.confirm?.(`${bodyBase}\n\nID: ${id}`) ?? false;
+      if (!ok) return;
+
+      await Promise.resolve(deleteLot(id));
+
+      // optional hygiene
+      try {
+        clearProofForLot(id);
+      } catch {}
+
+      // @ts-ignore
+      globalThis?.alert?.(`${deletedText}: ${id}`);
+      return;
+    }
+
+    // ✅ MOBILE: Alert.alert works well
+    Alert.alert(title, `${bodyBase}\n\nID: ${id}`, [
+      { text: cancelText, style: "cancel" },
       {
-        text: tt.delete,
+        text: deleteText,
         style: "destructive",
-        onPress: () => {
-          deleteLot(id);
+        onPress: async () => {
+          await Promise.resolve(deleteLot(id));
+          try {
+            clearProofForLot(id);
+          } catch {}
 
-          if (Platform.OS === "web") {
-            // @ts-ignore
-            globalThis?.alert?.(`${tt.deleted}: ${id}`);
-          } else {
-            Alert.alert(tt.deleted, `${id} ${tt.removedFromCatalog}`);
-          }
+          Alert.alert(
+            deletedText,
+            removedFromCatalog ? `${id} ${removedFromCatalog}` : id
+          );
         },
       },
     ]);
@@ -101,6 +171,18 @@ export default function CatalogScreen() {
   const onClearVerified = (lotId: string) => {
     if (!isOperator) return;
 
+    // ✅ WEB: confirm
+    if (Platform.OS === "web") {
+      // @ts-ignore
+      const ok = globalThis?.confirm?.(v.clearBody) ?? false;
+      if (!ok) return;
+      clearProofForLot(lotId);
+      // @ts-ignore
+      globalThis?.alert?.(`${v.cleared}: ${lotId}`);
+      return;
+    }
+
+    // ✅ MOBILE: Alert.alert
     Alert.alert(v.clearTitle, v.clearBody, [
       { text: v.cancel, style: "cancel" },
       {
@@ -108,16 +190,97 @@ export default function CatalogScreen() {
         style: "destructive",
         onPress: () => {
           clearProofForLot(lotId);
-
-          if (Platform.OS === "web") {
-            // @ts-ignore
-            globalThis?.alert?.(`${v.cleared}: ${lotId}`);
-          } else {
-            Alert.alert(v.cleared, lotId);
-          }
+          Alert.alert(v.cleared, lotId);
         },
       },
     ]);
+  };
+
+  const getUploadedThumbUri = (lot: Lot): string => {
+    const arr = (lot as any)?.photos;
+    if (!Array.isArray(arr) || arr.length === 0) return "";
+    const u = safeString(arr[0]);
+    return u || "";
+  };
+
+  const getDemoThumbSafe = (lot: Lot) => {
+    try {
+      return getLotThumbnail(lot);
+    } catch {
+      return null;
+    }
+  };
+
+  const [verifyStateById, setVerifyStateById] = useState<Record<string, VerifyState>>(
+    {}
+  );
+
+  useEffect(() => {
+    let alive = true;
+
+    (async () => {
+      const next: Record<string, VerifyState> = {};
+
+      for (const lot of lots) {
+        const proof = getProofByLotId(lot.id);
+        next[lot.id] = proof ? "checking" : "not_verified";
+      }
+      if (alive) setVerifyStateById(next);
+
+      const updates: Record<string, VerifyState> = { ...next };
+
+      for (const lot of lots) {
+        const proof = getProofByLotId(lot.id);
+        if (!proof) continue;
+
+        try {
+          const { hashHex } = await computeLotHash(lot);
+          updates[lot.id] = hashHex === proof.hash ? "verified" : "tampered";
+        } catch {
+          updates[lot.id] = "tampered";
+        }
+      }
+
+      if (alive) setVerifyStateById(updates);
+    })();
+
+    return () => {
+      alive = false;
+    };
+  }, [lots, proofs, getProofByLotId]);
+
+  const badgeFor = (state: VerifyState) => {
+    switch (state) {
+      case "verified":
+        return {
+          label: `${v.verified} ✓`,
+          dotStyle: styles.dotGreen,
+          textStyle: styles.badgeTextGreen,
+          frameStyle: styles.badgeFrameDefault,
+        };
+      case "tampered":
+        return {
+          label: `⚠ ${v.tampered}`,
+          dotStyle: styles.dotRed,
+          textStyle: styles.badgeTextRed,
+          frameStyle: styles.badgeFrameDanger,
+        };
+      case "checking":
+        return {
+          label: v.checking,
+          dotStyle: styles.dotYellow,
+          textStyle: styles.badgeTextYellow,
+          frameStyle: styles.badgeFrameDefault,
+        };
+      case "not_verified":
+      default:
+        return {
+          label: v.notVerified,
+          dotStyle: styles.dotYellow,
+          textStyle: styles.badgeTextYellow,
+          frameStyle: styles.badgeFrameDefault,
+        };
+    }
   };
 
   return (
@@ -138,13 +301,10 @@ export default function CatalogScreen() {
               {lots.length} {tt.lotsCount}
             </Text>
 
-            {mode === "operator" ? (
+            {isOperator ? (
               <Pressable
                 onPress={onGoCreate}
-                style={({ pressed }) => [
-                  styles.createBtn,
-                  pressed && styles.pressed,
-                ]}
+                style={({ pressed }) => [styles.createBtn, pressed && styles.pressed]}
               >
                 <Text style={styles.createBtnText}>{tt.createLot}</Text>
               </Pressable>
@@ -155,16 +315,29 @@ export default function CatalogScreen() {
 
       <Text style={styles.sub}>{tt.catalogSub}</Text>
 
-      <ScrollView
-        contentContainerStyle={styles.list}
-        showsVerticalScrollIndicator={true}
-      >
+      <ScrollView contentContainerStyle={styles.list} showsVerticalScrollIndicator>
         {lots.map((lot) => {
-          const thumb = getLotThumbnail(lot);
-          const productLabel = getProductLabel(lot, lang);
+          const uploadedUri = getUploadedThumbUri(lot);
+          const demoThumb = getDemoThumbSafe(lot);
 
-          const proof = getProofByLotId ? getProofByLotId(lot.id) : undefined;
-          const isVerified = !!proof?.txHash;
+          let productLabel = "";
+          try {
+            productLabel = getProductLabel(lot, lang);
+          } catch {
+            productLabel =
+              safeString((lot as any)?.product_en) ||
+              safeString((lot as any)?.product_es) ||
+              "—";
+          }
+
+          const state = verifyStateById[lot.id] ?? "not_verified";
+          const badge = badgeFor(state);
+
+          const proof = getProofByLotId(lot.id);
+          const hasProof = !!proof?.txHash;
+
+          const hasUploaded = !!uploadedUri;
+          const hasDemo = !!demoThumb;
 
           return (
             <Pressable
@@ -172,35 +345,34 @@ export default function CatalogScreen() {
               onPress={() => onOpenLot(lot.id)}
               style={({ pressed }) => [styles.card, pressed && styles.pressed]}
             >
-              {/* ✅ Verified badge pinned top-right */}
-              {isVerified ? (
-                <View style={styles.verifiedCorner}>
-                  <Text style={styles.verifiedText}>{v.verified}</Text>
+              <View style={[styles.badgeCorner, badge.frameStyle]}>
+                <View style={[styles.dot, badge.dotStyle]} />
+                <Text style={[styles.badgeTextBase, badge.textStyle]} numberOfLines={1}>
+                  {badge.label}
+                </Text>
 
-                  {isOperator ? (
-                    <Pressable
-                      onPress={(e) => {
-                        // @ts-ignore
-                        e?.stopPropagation?.();
-                        onClearVerified(lot.id);
-                      }}
-                      style={({ pressed }) => [
-                        styles.clearVerifiedBtn,
-                        pressed && styles.pressed,
-                      ]}
-                    >
-                      <Text style={styles.clearVerifiedText}>{v.clear}</Text>
-                    </Pressable>
-                  ) : null}
-                </View>
-              ) : null}
+                {isOperator && hasProof ? (
+                  <Pressable
+                    onPressIn={(e) => stopEvt(e)}
+                    onPress={(e) => {
+                      stopEvt(e);
+                      onClearVerified(lot.id);
+                    }}
+                    style={({ pressed }) => [styles.clearVerifiedBtn, pressed && styles.pressed]}
+                  >
+                    <Text style={styles.clearVerifiedText}>{v.clear}</Text>
+                  </Pressable>
+                ) : null}
+              </View>
 
               <View style={styles.thumbWrap}>
-                {thumb ? (
-                  <Image source={thumb as any} style={styles.thumb} />
+                {hasUploaded ? (
+                  <Image source={{ uri: uploadedUri }} style={styles.thumb} />
+                ) : hasDemo ? (
+                  <Image source={demoThumb as any} style={styles.thumb} />
                 ) : (
                   <View style={styles.thumbPlaceholder}>
-                    <Text style={styles.thumbPlaceholderText}>IMG</Text>
+                    <Text style={styles.thumbPlaceholderText}>{v.img}</Text>
                   </View>
                 )}
               </View>
@@ -224,17 +396,14 @@ export default function CatalogScreen() {
                 <View style={styles.rowBottom}>
                   <Text style={styles.openHint}>{tt.openDetailsHint}</Text>
 
-                  {mode === "operator" ? (
+                  {isOperator ? (
                     <Pressable
+                      onPressIn={(e) => stopEvt(e)}
                       onPress={(e) => {
-                        // @ts-ignore
-                        e?.stopPropagation?.();
+                        stopEvt(e);
                         onDelete(lot.id);
                       }}
-                      style={({ pressed }) => [
-                        styles.deleteBtn,
-                        pressed && styles.pressed,
-                      ]}
+                      style={({ pressed }) => [styles.deleteBtn, pressed && styles.pressed]}
                     >
                       <Text style={styles.deleteBtnText}>{tt.delete}</Text>
                     </Pressable>
@@ -338,28 +507,46 @@ const makeStyles = (c: ThemeColors) =>
       ...(Platform.OS === "web" ? ({ cursor: "pointer" } as any) : null),
     },
 
-    // ✅ corner badge (top-right)
-    verifiedCorner: {
+    badgeCorner: {
       position: "absolute",
       top: 10,
       right: 10,
       flexDirection: "row",
       alignItems: "center",
       gap: 8,
-      backgroundColor: c.segmentBg,
       borderWidth: 1,
       borderColor: c.border,
       paddingVertical: 6,
       paddingHorizontal: 10,
       borderRadius: 999,
       zIndex: 5,
+      maxWidth: "90%",
+      backgroundColor: c.segmentBg,
     },
-    verifiedText: {
-      color: c.green,
+    badgeFrameDefault: { backgroundColor: c.segmentBg },
+    badgeFrameDanger: { backgroundColor: c.dangerBg, borderColor: c.red },
+
+    dot: {
+      width: 10,
+      height: 10,
+      borderRadius: 999,
+      borderWidth: 1,
+      borderColor: c.border,
+    },
+    dotGreen: { backgroundColor: c.green },
+    dotYellow: { backgroundColor: c.yellow },
+    dotRed: { backgroundColor: c.red },
+
+    badgeTextBase: {
       fontWeight: "900",
-      letterSpacing: 0.4,
+      letterSpacing: 0.35,
       fontSize: 12,
+      maxWidth: 180,
     },
+    badgeTextGreen: { color: c.green },
+    badgeTextYellow: { color: c.yellow },
+    badgeTextRed: { color: c.red },
+
     clearVerifiedBtn: {
       borderWidth: 1,
       borderColor: c.border,

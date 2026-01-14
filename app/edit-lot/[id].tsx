@@ -1,6 +1,6 @@
-// app/create-lot.tsx
+// app/edit-lot/[id].tsx
 import * as ImagePicker from "expo-image-picker";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
 import {
     Alert,
@@ -14,57 +14,145 @@ import {
     TextInput,
     View,
 } from "react-native";
-import { t as I18N } from "./i18n";
-import { useLots } from "./lots-store";
-import { getTheme } from "./theme";
+import { t as I18N } from "../i18n";
+import type { Lot } from "../lots";
+import { useLots } from "../lots-store";
+import { getTheme } from "../theme";
+
+function normalizeId(id: string | string[] | undefined) {
+  if (!id) return "";
+  return Array.isArray(id) ? id[0] : id;
+}
+
+function safeExtFromUri(uri: string) {
+  const clean = uri.split("?")[0].split("#")[0];
+  const m = clean.match(/\.([a-zA-Z0-9]+)$/);
+  const ext = (m?.[1] || "jpg").toLowerCase();
+  if (["jpg", "jpeg", "png", "webp", "heic", "heif"].includes(ext)) return ext;
+  return "jpg";
+}
+
+function mimeFromExt(ext: string) {
+  switch (ext) {
+    case "png":
+      return "image/png";
+    case "webp":
+      return "image/webp";
+    case "heic":
+      return "image/heic";
+    case "heif":
+      return "image/heif";
+    case "jpeg":
+      return "image/jpeg";
+    case "jpg":
+    default:
+      return "image/jpeg";
+  }
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer) {
+  let binary = "";
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, i + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+  // @ts-ignore
+  return globalThis.btoa(binary);
+}
+
+/**
+ * MVP persistence rule:
+ * - WEB: store as data URL base64 (blob: URIs die on refresh)
+ * - NATIVE: store the URI as-is (file:// or content://)
+ */
+async function persistPickedAsset(
+  asset: ImagePicker.ImagePickerAsset
+): Promise<string | null> {
+  const uri = asset?.uri;
+  if (!uri) return null;
+
+  // ✅ WEB: convert to base64 data URL
+  if (Platform.OS === "web") {
+    try {
+      const ext = safeExtFromUri(uri);
+      const mime = (asset as any)?.mimeType || mimeFromExt(ext);
+
+      const res = await fetch(uri);
+      const buf = await res.arrayBuffer();
+      const b64 = arrayBufferToBase64(buf);
+
+      return `data:${mime};base64,${b64}`;
+    } catch {
+      // fallback: may not survive refresh, but prevents total failure
+      return uri;
+    }
+  }
+
+  // ✅ Native: keep URI
+  return uri;
+}
 
 function isValidDateYYYYMMDD(s: string) {
   return /^\d{4}-\d{2}-\d{2}$/.test(s);
 }
 
-function normalizeText(v: string) {
+function s(v: any) {
   return String(v ?? "").trim();
 }
 
-function makeLotId() {
-  const code = Math.random().toString(36).slice(2, 6).toUpperCase();
-  return `LOT-${code}`;
-}
-
-/**
- * ✅ WEB ONLY:
- * Convert a blob/object URL (or normal URL) to data URL so it persists after refresh.
- */
-async function webUriToDataUrl(uri: string): Promise<string> {
-  // If already data URL, keep it.
-  if (uri.startsWith("data:")) return uri;
-
-  const res = await fetch(uri);
-  const blob = await res.blob();
-
-  const dataUrl: string = await new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error("FileReader failed"));
-    reader.onload = () => resolve(String(reader.result ?? ""));
-    reader.readAsDataURL(blob);
-  });
-
-  return dataUrl;
-}
-
-export default function CreateLotScreen() {
+export default function EditLotScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams<{ id?: string | string[] }>();
+  const lotId = normalizeId(params.id);
 
-  const { addLot, getLotById, lang, mode, themeName } = useLots();
+  const { getLotById, updateLot, lang, mode, themeName } = useLots();
   const tt = I18N[lang];
 
   const theme = useMemo(() => getTheme(themeName), [themeName]);
   const c = theme.colors;
   const styles = useMemo(() => makeStyles(c), [c]);
 
+  const lot = (lotId ? (getLotById(lotId) as Lot | undefined) : undefined) as
+    | Lot
+    | undefined;
+
+  // ✅ Gate: operator only
+  useEffect(() => {
+    if (mode !== "operator") {
+      if (Platform.OS !== "web") Alert.alert(tt.wrongPin, tt.tryAgain);
+      router.replace("/catalog");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, router]);
+
+  // Avoid flash if client
+  if (mode !== "operator") {
+    return <View style={styles.page} />;
+  }
+
   const ui = useMemo(() => {
     if (lang === "es") {
       return {
+        title: "Editar lote",
+        sub: "Actualiza datos del lote y agrega fotos si faltaban.",
+        notFound: "No se encontró el lote:",
+        save: "Guardar cambios",
+        cancel: "Cancelar",
+        productEn: "Producto (EN)",
+        productEs: "Producto (ES)",
+        origin: "Origen",
+        harvestDate: "Fecha de cosecha",
+        batch: "Batch",
+        notes: "Notas (opcional)",
+        dateHint: "Formato: YYYY-MM-DD",
+        missingFields: "Faltan campos",
+        fillRequired:
+          "Completa los campos requeridos: Producto (EN o ES), Origen, Fecha y Batch.",
+        invalidDate: "Fecha inválida",
+        invalidDateBody: "Usa el formato YYYY-MM-DD (ej. 2026-01-10).",
+
         photosTitle: "Fotos del producto",
         photosSub:
           "Sube fotos del producto para que el cliente vea evidencia del lote.",
@@ -74,19 +162,29 @@ export default function CreateLotScreen() {
         permDenied:
           "Permiso denegado. Activa acceso a Fotos en Settings y vuelve a intentar.",
         pickFailed: "No se pudieron seleccionar fotos.",
-        notOperator: "Solo el Operador puede crear lotes.",
-        ok: "OK",
-        productEnLabel: "Producto (EN)",
-        productEsLabel: "Producto (ES)",
-        productHintEn: "ej. Papaya",
-        productHintEs: "ej. Papaya",
-        originHint: "ej. Santa Ana, El Salvador",
-        batchHint: "ej. BATCH-A1",
-        dateHint: "YYYY-MM-DD",
-        converting: "Procesando fotos…",
+        saved: "Guardado",
+        savedBody: "Cambios guardados para:",
       };
     }
     return {
+      title: "Edit lot",
+      sub: "Update lot details and add photos if needed.",
+      notFound: "Lot not found:",
+      save: "Save changes",
+      cancel: "Cancel",
+      productEn: "Product (EN)",
+      productEs: "Product (ES)",
+      origin: "Origin",
+      harvestDate: "Harvest date",
+      batch: "Batch",
+      notes: "Notes (optional)",
+      dateHint: "Format: YYYY-MM-DD",
+      missingFields: "Missing fields",
+      fillRequired:
+        "Please fill required fields: Product (EN or ES), Origin, Date and Batch.",
+      invalidDate: "Invalid date",
+      invalidDateBody: "Use YYYY-MM-DD (e.g. 2026-01-10).",
+
       photosTitle: "Product photos",
       photosSub: "Upload photos so clients can see evidence for this lot/batch.",
       upload: "Upload photos",
@@ -95,34 +193,12 @@ export default function CreateLotScreen() {
       permDenied:
         "Permission denied. Enable Photos access in Settings and try again.",
       pickFailed: "Could not pick photos.",
-      notOperator: "Only Operator can create lots.",
-      ok: "OK",
-      productEnLabel: "Product (EN)",
-      productEsLabel: "Product (ES)",
-      productHintEn: "e.g. Papaya",
-      productHintEs: "e.g. Papaya",
-      originHint: "e.g. Santa Ana, El Salvador",
-      batchHint: "e.g. BATCH-A1",
-      dateHint: "YYYY-MM-DD",
-      converting: "Processing photos…",
+      saved: "Saved",
+      savedBody: "Changes saved for:",
     };
-  }, [lang]);
+  }, [lang, tt.tryAgain, tt.wrongPin]);
 
-  // ✅ Gate: SOLO OPERATOR
-  useEffect(() => {
-    if (mode !== "operator") {
-      if (Platform.OS !== "web") {
-        Alert.alert("AgriTrace", ui.notOperator, [{ text: ui.ok }]);
-      }
-      router.replace("/catalog");
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, router]);
-
-  if (mode !== "operator") {
-    return <View style={styles.page} />;
-  }
-
+  // ✅ init form from lot
   const [productEn, setProductEn] = useState("");
   const [productEs, setProductEs] = useState("");
   const [origin, setOrigin] = useState("");
@@ -130,13 +206,27 @@ export default function CreateLotScreen() {
   const [batch, setBatch] = useState("");
   const [notes, setNotes] = useState("");
 
-  // ✅ Photos (user-uploaded)
   const [photoUris, setPhotoUris] = useState<string[]>([]);
-  const [busyPhotos, setBusyPhotos] = useState(false);
 
-  const handleBack = () => {
-    router.replace("/catalog");
-  };
+  useEffect(() => {
+    if (!lot) return;
+
+    setProductEn(s((lot as any).product_en));
+    setProductEs(s((lot as any).product_es));
+    setOrigin(s(lot.origin));
+    setHarvestDate(s(lot.harvestDate));
+    setBatch(s(lot.batch));
+    setNotes(s((lot as any).notes));
+
+    const existingPhotos = Array.isArray((lot as any).photos) ? (lot as any).photos : [];
+    setPhotoUris(
+      existingPhotos
+        .map((u: any) => s(u))
+        .filter(Boolean)
+        .slice(0, 5)
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lot?.id]);
 
   const requestPhotoPermissionIfNeeded = async () => {
     if (Platform.OS === "web") return true;
@@ -167,40 +257,21 @@ export default function CreateLotScreen() {
 
       if (res.canceled) return;
 
-      const picked = (res.assets ?? [])
-        .map((a) => a?.uri)
-        .filter((u): u is string => !!u);
+      const assets = (res.assets ?? []).filter(Boolean);
+      if (assets.length === 0) return;
 
-      if (picked.length === 0) return;
+      const persisted = (
+        await Promise.all(assets.map((a) => persistPickedAsset(a)))
+      ).filter((u): u is string => !!u);
 
-      // ✅ WEB: convert picked uris to data URLs so they survive refresh
-      if (Platform.OS === "web") {
-        setBusyPhotos(true);
-        try {
-          const converted: string[] = [];
-          for (const uri of picked) {
-            const dataUrl = await webUriToDataUrl(uri);
-            if (dataUrl) converted.push(dataUrl);
-          }
+      if (persisted.length === 0) return;
 
-          setPhotoUris((prev) => {
-            const next = [...prev, ...converted];
-            // hard cap (demo)
-            return next.slice(0, 5);
-          });
-        } finally {
-          setBusyPhotos(false);
-        }
-        return;
-      }
-
-      // ✅ Native: keep file uri (works persisted in AsyncStorage lots)
       setPhotoUris((prev) => {
-        const next = [...prev, ...picked];
-        return next.slice(0, 5);
+        const next = [...prev, ...persisted];
+        const uniq = Array.from(new Set(next));
+        return uniq.slice(0, 5);
       });
     } catch {
-      setBusyPhotos(false);
       Alert.alert("AgriTrace", ui.pickFailed);
     }
   };
@@ -209,60 +280,81 @@ export default function CreateLotScreen() {
     setPhotoUris((prev) => prev.filter((x) => x !== uri));
   };
 
-  const buildUniqueLotId = () => {
-    for (let i = 0; i < 30; i++) {
-      const id = makeLotId();
-      if (!getLotById(id)) return id;
+  const onCancel = () => {
+    if (!lotId) {
+      router.replace("/catalog");
+      return;
     }
-    return `LOT-${Date.now().toString(36).toUpperCase()}`;
+    router.replace({ pathname: "/lot/[id]", params: { id: lotId } } as any);
   };
 
   const onSave = () => {
-    if (busyPhotos) return;
+    if (!lotId || !lot) {
+      router.replace("/catalog");
+      return;
+    }
 
-    const pe = normalizeText(productEn);
-    const ps = normalizeText(productEs);
-    const o = normalizeText(origin);
-    const h = normalizeText(harvestDate);
-    const b = normalizeText(batch);
-    const n = normalizeText(notes);
+    const pe = s(productEn);
+    const ps = s(productEs);
+    const o = s(origin);
+    const h = s(harvestDate);
+    const b = s(batch);
+    const n = s(notes);
 
     if (!o || !h || !b || (!pe && !ps)) {
-      Alert.alert(tt.missingFields, tt.fillRequired);
+      Alert.alert(ui.missingFields, ui.fillRequired);
       return;
     }
 
     if (!isValidDateYYYYMMDD(h)) {
-      Alert.alert(tt.invalidDate, tt.dateFormatHint);
+      Alert.alert(ui.invalidDate, ui.invalidDateBody);
       return;
     }
 
+    // ✅ If only one product is filled, mirror to the other
     const finalEn = pe || ps;
     const finalEs = ps || pe;
 
-    const id = buildUniqueLotId();
-
-    addLot({
-      id,
+    updateLot(lotId, {
       product_en: finalEn,
       product_es: finalEs,
       origin: o,
       harvestDate: h,
       batch: b,
       notes: n || undefined,
-      photos: photoUris.slice(0, 5),
-      createdAt: Date.now(),
-    } as any);
+      photos: photoUris,
+    });
 
     if (Platform.OS === "web") {
       // @ts-ignore
-      globalThis?.alert?.(`${tt.saved}: ${id}`);
+      globalThis?.alert?.(`${ui.saved}: ${lotId}`);
     } else {
-      Alert.alert(tt.saved, `${tt.lotCreated} ${id}`);
+      Alert.alert(ui.saved, `${ui.savedBody} ${lotId}`);
     }
 
-    router.replace("/catalog");
+    router.replace({ pathname: "/lot/[id]", params: { id: lotId } } as any);
   };
+
+  // If lot missing
+  if (!lotId || !lot) {
+    return (
+      <View style={styles.page}>
+        <View style={styles.headerRow}>
+          <Pressable
+            onPress={() => router.replace("/catalog")}
+            style={({ pressed }) => [styles.backBtn, pressed && styles.pressed]}
+          >
+            <Text style={styles.backBtnText}>← {tt.back}</Text>
+          </Pressable>
+        </View>
+
+        <Text style={styles.title}>{ui.title}</Text>
+        <Text style={styles.errorText}>
+          {ui.notFound} {lotId || "(no id)"}
+        </Text>
+      </View>
+    );
+  }
 
   return (
     <KeyboardAvoidingView
@@ -272,69 +364,68 @@ export default function CreateLotScreen() {
     >
       <View style={styles.headerRow}>
         <Pressable
-          onPress={handleBack}
+          onPress={onCancel}
           style={({ pressed }) => [styles.backBtn, pressed && styles.pressed]}
         >
-          <Text style={styles.backBtnText}>← {tt.back}</Text>
+          <Text style={styles.backBtnText}>← {ui.cancel}</Text>
         </Pressable>
       </View>
 
-      <ScrollView
-        contentContainerStyle={styles.content}
-        showsVerticalScrollIndicator={true}
-        keyboardShouldPersistTaps="handled"
-      >
-        <Text style={styles.title}>{tt.createLotTitle}</Text>
-        <Text style={styles.sub}>{tt.createLotSub}</Text>
+      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator>
+        <Text style={styles.title}>{ui.title}</Text>
+        <Text style={styles.sub}>{ui.sub}</Text>
 
-        <Text style={styles.label}>{ui.productEnLabel}</Text>
+        {/* Product EN */}
+        <Text style={styles.label}>{ui.productEn}</Text>
         <TextInput
           value={productEn}
           onChangeText={setProductEn}
-          placeholder={ui.productHintEn}
+          placeholder={lang === "es" ? "ej. Papaya" : "e.g. Papaya"}
           placeholderTextColor={c.muted}
           style={styles.input}
         />
 
-        <Text style={styles.label}>{ui.productEsLabel}</Text>
+        {/* Product ES */}
+        <Text style={styles.label}>{ui.productEs}</Text>
         <TextInput
           value={productEs}
           onChangeText={setProductEs}
-          placeholder={ui.productHintEs}
+          placeholder={lang === "es" ? "ej. Papaya" : "e.g. Papaya"}
           placeholderTextColor={c.muted}
           style={styles.input}
         />
 
-        <Text style={styles.label}>{tt.origin}</Text>
+        <Text style={styles.label}>{ui.origin}</Text>
         <TextInput
           value={origin}
           onChangeText={setOrigin}
-          placeholder={ui.originHint}
+          placeholder={lang === "es" ? "ej. Santa Ana, El Salvador" : "e.g. Santa Ana, El Salvador"}
           placeholderTextColor={c.muted}
           style={styles.input}
         />
 
-        <Text style={styles.label}>{tt.harvestDate}</Text>
+        <Text style={styles.label}>{ui.harvestDate}</Text>
         <TextInput
           value={harvestDate}
           onChangeText={setHarvestDate}
-          placeholder={ui.dateHint}
+          placeholder="YYYY-MM-DD"
           placeholderTextColor={c.muted}
           autoCapitalize="none"
           style={styles.input}
         />
+        <Text style={styles.hint}>{ui.dateHint}</Text>
 
-        <Text style={styles.label}>{tt.batch}</Text>
+        <Text style={styles.label}>{ui.batch}</Text>
         <TextInput
           value={batch}
           onChangeText={setBatch}
-          placeholder={ui.batchHint}
+          placeholder={lang === "es" ? "ej. BATCH-A1" : "e.g. BATCH-A1"}
           placeholderTextColor={c.muted}
           autoCapitalize="none"
           style={styles.input}
         />
 
-        <Text style={styles.label}>{tt.notesOptional}</Text>
+        <Text style={styles.label}>{ui.notes}</Text>
         <TextInput
           value={notes}
           onChangeText={setNotes}
@@ -344,6 +435,7 @@ export default function CreateLotScreen() {
           multiline
         />
 
+        {/* Photos */}
         <View style={styles.photosBox}>
           <Text style={styles.photosTitle}>{ui.photosTitle}</Text>
           <Text style={styles.photosSub}>
@@ -356,13 +448,11 @@ export default function CreateLotScreen() {
               style={({ pressed }) => [
                 styles.photoBtn,
                 pressed && styles.pressed,
-                (photoUris.length >= 5 || busyPhotos) && styles.disabled,
+                photoUris.length >= 5 && styles.disabled,
               ]}
-              disabled={photoUris.length >= 5 || busyPhotos}
+              disabled={photoUris.length >= 5}
             >
-              <Text style={styles.photoBtnText}>
-                {busyPhotos ? ui.converting : ui.upload}
-              </Text>
+              <Text style={styles.photoBtnText}>{ui.upload}</Text>
             </Pressable>
 
             <Text style={styles.photosCount}>{photoUris.length}/5</Text>
@@ -370,15 +460,12 @@ export default function CreateLotScreen() {
 
           {photoUris.length > 0 ? (
             <View style={styles.photosRow}>
-              {photoUris.map((uri) => (
-                <View key={uri} style={styles.photoCard}>
+              {photoUris.map((uri, idx) => (
+                <View key={`${uri}-${idx}`} style={styles.photoCard}>
                   <Image source={{ uri }} style={styles.photoThumb} />
                   <Pressable
                     onPress={() => onRemovePhoto(uri)}
-                    style={({ pressed }) => [
-                      styles.removeBtn,
-                      pressed && styles.pressed,
-                    ]}
+                    style={({ pressed }) => [styles.removeBtn, pressed && styles.pressed]}
                   >
                     <Text style={styles.removeBtnText}>{ui.remove}</Text>
                   </Pressable>
@@ -390,14 +477,9 @@ export default function CreateLotScreen() {
 
         <Pressable
           onPress={onSave}
-          style={({ pressed }) => [
-            styles.saveBtn,
-            pressed && styles.pressed,
-            busyPhotos && styles.disabled,
-          ]}
-          disabled={busyPhotos}
+          style={({ pressed }) => [styles.saveBtn, pressed && styles.pressed]}
         >
-          <Text style={styles.saveBtnText}>{tt.saveLot}</Text>
+          <Text style={styles.saveBtnText}>{ui.save}</Text>
         </Pressable>
       </ScrollView>
     </KeyboardAvoidingView>
@@ -443,6 +525,7 @@ const makeStyles = (c: ThemeColors) =>
       marginBottom: 12,
       fontSize: 13,
       letterSpacing: 0.3,
+      lineHeight: 18,
     },
 
     label: {
@@ -465,6 +548,13 @@ const makeStyles = (c: ThemeColors) =>
       letterSpacing: 0.3,
     },
     notes: { minHeight: 90, textAlignVertical: "top" },
+    hint: {
+      marginTop: 6,
+      color: c.muted,
+      fontWeight: "800",
+      letterSpacing: 0.2,
+      fontSize: 12,
+    },
 
     photosBox: {
       marginTop: 14,
@@ -563,5 +653,12 @@ const makeStyles = (c: ThemeColors) =>
       fontWeight: "900",
       letterSpacing: 0.6,
       fontSize: 14,
+    },
+
+    errorText: {
+      marginTop: 10,
+      color: c.muted,
+      fontWeight: "800",
+      letterSpacing: 0.3,
     },
   });

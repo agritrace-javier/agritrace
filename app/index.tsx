@@ -20,8 +20,15 @@ const LOGO_MARK = require("../assets/logo-mark.png");
 export default function HomeScreen() {
   const router = useRouter();
 
-  // ✅ TODO global desde store
-  const { lang, setLang, themeName, setThemeName, mode, enterOperatorWithPin, exitToClient } = useLots();
+  const {
+    lang,
+    setLang,
+    themeName,
+    setThemeName,
+    mode,
+    enterOperatorWithPin,
+    exitToClient,
+  } = useLots();
 
   const theme = useMemo(() => getTheme(themeName), [themeName]);
   const styles = useMemo(() => makeStyles(theme.colors), [theme.colors]);
@@ -33,12 +40,15 @@ export default function HomeScreen() {
     const dict = {
       en: {
         title: "AgriTrace",
-        subtitle: "Connects the farm, logistics, and consumer using blockchain traceability.",
+        subtitle:
+          "Connects the farm, logistics, and consumer using blockchain traceability.",
         language: "Language",
         theme: "Theme",
         light: "Light",
         dark: "Dark",
-        start: "Start",
+        start: "Open Catalog",
+        scan: "Scan QR",
+        scanHint: "Consumer flow (scan → lot details).",
         about: "About Us",
         modeLabel: "Mode",
         client: "Client",
@@ -56,12 +66,15 @@ export default function HomeScreen() {
       },
       es: {
         title: "AgriTrace",
-        subtitle: "Conecta el productor, la logística y el consumidor usando trazabilidad en blockchain.",
+        subtitle:
+          "Conecta el productor, la logística y el consumidor usando trazabilidad en blockchain.",
         language: "Idioma",
         theme: "Tema",
         light: "Claro",
         dark: "Oscuro",
-        start: "Comenzar",
+        start: "Abrir Catálogo",
+        scan: "Escanear QR",
+        scanHint: "Flujo consumidor (scan → detalle del lote).",
         about: "Acerca de nosotros",
         modeLabel: "Modo",
         client: "Cliente",
@@ -123,14 +136,20 @@ export default function HomeScreen() {
 
             {mode === "operator" ? (
               <Pressable
-                style={({ pressed }) => [styles.modeBtn, pressed && styles.primaryBtnPressed]}
+                style={({ pressed }) => [
+                  styles.modeBtn,
+                  pressed && styles.primaryBtnPressed,
+                ]}
                 onPress={exitToClient}
               >
                 <Text style={styles.modeBtnText}>{t.exit}</Text>
               </Pressable>
             ) : (
               <Pressable
-                style={({ pressed }) => [styles.modeBtn, pressed && styles.primaryBtnPressed]}
+                style={({ pressed }) => [
+                  styles.modeBtn,
+                  pressed && styles.primaryBtnPressed,
+                ]}
                 onPress={openPin}
               >
                 <Text style={styles.modeBtnText}>{t.enterOperator}</Text>
@@ -138,25 +157,50 @@ export default function HomeScreen() {
             )}
           </View>
 
-          {/* START */}
-          <Pressable
-            style={({ pressed }) => [styles.heroPrimaryBtn, pressed && styles.primaryBtnPressed]}
-            onPress={() => router.push("/catalog")}
-          >
-            <Text style={styles.heroPrimaryBtnText}>{t.start}</Text>
-            <Text style={styles.heroPrimaryBtnArrow}>→</Text>
-          </Pressable>
+          {/* PRIMARY ACTIONS */}
+          <View style={styles.heroActions}>
+            {/* ✅ Scan QR (consumer flow) */}
+            <Pressable
+              style={({ pressed }) => [
+                styles.heroPrimaryBtn,
+                pressed && styles.primaryBtnPressed,
+              ]}
+              onPress={() => router.push("/scan")}
+            >
+              <Text style={styles.heroPrimaryBtnText}>{t.scan}</Text>
+              <Text style={styles.heroPrimaryBtnArrow}>→</Text>
+            </Pressable>
 
-          {/* ABOUT US */}
-          <Pressable
-            style={({ pressed }) => [styles.heroSecondaryBtn, pressed && styles.primaryBtnPressed]}
-            onPress={() => router.push("/about")}
-          >
-            <Text style={styles.heroSecondaryBtnText}>{t.about}</Text>
-            <Text style={styles.heroSecondaryBtnArrow}>→</Text>
-          </Pressable>
+            <Text style={styles.actionHint}>{t.scanHint}</Text>
 
-          <Text style={styles.footerHint}>{Platform.OS === "web" ? t.tipWeb : t.tipMobile}</Text>
+            {/* Catalog */}
+            <Pressable
+              style={({ pressed }) => [
+                styles.heroSecondaryBtn,
+                pressed && styles.primaryBtnPressed,
+              ]}
+              onPress={() => router.push("/catalog")}
+            >
+              <Text style={styles.heroSecondaryBtnText}>{t.start}</Text>
+              <Text style={styles.heroSecondaryBtnArrow}>→</Text>
+            </Pressable>
+
+            {/* ABOUT US */}
+            <Pressable
+              style={({ pressed }) => [
+                styles.heroTertiaryBtn,
+                pressed && styles.primaryBtnPressed,
+              ]}
+              onPress={() => router.push("/about")}
+            >
+              <Text style={styles.heroTertiaryBtnText}>{t.about}</Text>
+              <Text style={styles.heroTertiaryBtnArrow}>→</Text>
+            </Pressable>
+          </View>
+
+          <Text style={styles.footerHint}>
+            {Platform.OS === "web" ? t.tipWeb : t.tipMobile}
+          </Text>
         </View>
 
         {/* CONTROLS */}
@@ -204,13 +248,19 @@ export default function HomeScreen() {
             />
             <View style={styles.pinButtonsRow}>
               <Pressable
-                style={({ pressed }) => [styles.pinCancelBtn, pressed && styles.primaryBtnPressed]}
+                style={({ pressed }) => [
+                  styles.pinCancelBtn,
+                  pressed && styles.primaryBtnPressed,
+                ]}
                 onPress={() => setShowPin(false)}
               >
                 <Text style={styles.pinCancelText}>{t.cancel}</Text>
               </Pressable>
               <Pressable
-                style={({ pressed }) => [styles.pinConfirmBtn, pressed && styles.primaryBtnPressed]}
+                style={({ pressed }) => [
+                  styles.pinConfirmBtn,
+                  pressed && styles.primaryBtnPressed,
+                ]}
                 onPress={confirmPin}
               >
                 <Text style={styles.pinConfirmText}>{t.confirm}</Text>
@@ -240,14 +290,28 @@ function Segmented(props: {
         onPress={() => props.onChange(props.leftValue)}
         style={[props.styles.segment, isLeft && props.styles.segmentActive]}
       >
-        <Text style={[props.styles.segmentText, isLeft && props.styles.segmentTextActive]}>{props.leftLabel}</Text>
+        <Text
+          style={[
+            props.styles.segmentText,
+            isLeft && props.styles.segmentTextActive,
+          ]}
+        >
+          {props.leftLabel}
+        </Text>
       </Pressable>
 
       <Pressable
         onPress={() => props.onChange(props.rightValue)}
         style={[props.styles.segment, !isLeft && props.styles.segmentActive]}
       >
-        <Text style={[props.styles.segmentText, !isLeft && props.styles.segmentTextActive]}>{props.rightLabel}</Text>
+        <Text
+          style={[
+            props.styles.segmentText,
+            !isLeft && props.styles.segmentTextActive,
+          ]}
+        >
+          {props.rightLabel}
+        </Text>
       </Pressable>
     </View>
   );
@@ -265,9 +329,20 @@ const makeStyles = (c: ReturnType<typeof getTheme>["colors"]) =>
       justifyContent: "flex-start",
     },
 
-    hero: { width: "100%", maxWidth: 860, alignItems: "center", paddingBottom: 14 },
+    hero: {
+      width: "100%",
+      maxWidth: 860,
+      alignItems: "center",
+      paddingBottom: 14,
+    },
     heroLogo: { width: 190, height: 190, marginBottom: 6 },
-    heroTitle: { fontSize: 44, fontWeight: "900", color: c.text, letterSpacing: 1.2, marginTop: 6 },
+    heroTitle: {
+      fontSize: 44,
+      fontWeight: "900",
+      color: c.text,
+      letterSpacing: 1.2,
+      marginTop: 6,
+    },
     heroSubtitle: {
       marginTop: 10,
       maxWidth: 700,
@@ -279,7 +354,13 @@ const makeStyles = (c: ReturnType<typeof getTheme>["colors"]) =>
       paddingHorizontal: 10,
     },
 
-    modeRow: { marginTop: 10, flexDirection: "row", alignItems: "center", gap: 10, flexWrap: "wrap" },
+    modeRow: {
+      marginTop: 10,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 10,
+      flexWrap: "wrap",
+    },
     modeBadge: {
       color: c.text,
       fontWeight: "900",
@@ -301,10 +382,17 @@ const makeStyles = (c: ReturnType<typeof getTheme>["colors"]) =>
       borderColor: c.border,
       ...(Platform.OS === "web" ? ({ cursor: "pointer" } as any) : null),
     },
-    modeBtnText: { color: c.text, fontWeight: "900", letterSpacing: 0.6, fontSize: 12 },
+    modeBtnText: {
+      color: c.text,
+      fontWeight: "900",
+      letterSpacing: 0.6,
+      fontSize: 12,
+    },
+
+    heroActions: { width: "100%", alignItems: "center", marginTop: 10 },
 
     heroPrimaryBtn: {
-      marginTop: 16,
+      marginTop: 12,
       backgroundColor: c.green,
       borderRadius: 999,
       paddingVertical: 14,
@@ -315,14 +403,29 @@ const makeStyles = (c: ReturnType<typeof getTheme>["colors"]) =>
       gap: 10,
       borderWidth: 1,
       borderColor: c.green,
-      minWidth: 220,
+      minWidth: 240,
       alignSelf: "center",
     },
-    heroPrimaryBtnText: { color: "white", fontSize: 16, fontWeight: "900", letterSpacing: 1, textAlign: "center" },
+    heroPrimaryBtnText: {
+      color: "white",
+      fontSize: 16,
+      fontWeight: "900",
+      letterSpacing: 1,
+      textAlign: "center",
+    },
     heroPrimaryBtnArrow: { color: "white", fontSize: 18, fontWeight: "900" },
 
+    actionHint: {
+      marginTop: 8,
+      color: c.muted,
+      fontWeight: "800",
+      letterSpacing: 0.3,
+      fontSize: 12,
+      textAlign: "center",
+    },
+
     heroSecondaryBtn: {
-      marginTop: 10,
+      marginTop: 12,
       backgroundColor: c.card,
       borderRadius: 999,
       paddingVertical: 14,
@@ -333,15 +436,51 @@ const makeStyles = (c: ReturnType<typeof getTheme>["colors"]) =>
       gap: 10,
       borderWidth: 1,
       borderColor: c.border,
-      minWidth: 220,
+      minWidth: 240,
       alignSelf: "center",
     },
-    heroSecondaryBtnText: { color: c.text, fontSize: 16, fontWeight: "900", letterSpacing: 1, textAlign: "center" },
+    heroSecondaryBtnText: {
+      color: c.text,
+      fontSize: 16,
+      fontWeight: "900",
+      letterSpacing: 1,
+      textAlign: "center",
+    },
     heroSecondaryBtnArrow: { color: c.text, fontSize: 18, fontWeight: "900" },
+
+    heroTertiaryBtn: {
+      marginTop: 10,
+      backgroundColor: c.segmentBg,
+      borderRadius: 999,
+      paddingVertical: 14,
+      paddingHorizontal: 28,
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 10,
+      borderWidth: 1,
+      borderColor: c.border,
+      minWidth: 240,
+      alignSelf: "center",
+    },
+    heroTertiaryBtnText: {
+      color: c.text,
+      fontSize: 16,
+      fontWeight: "900",
+      letterSpacing: 1,
+      textAlign: "center",
+    },
+    heroTertiaryBtnArrow: { color: c.text, fontSize: 18, fontWeight: "900" },
 
     primaryBtnPressed: { opacity: 0.92, transform: [{ scale: 0.99 }] },
 
-    footerHint: { marginTop: 10, fontSize: 12, letterSpacing: 0.4, color: c.muted, textAlign: "center" },
+    footerHint: {
+      marginTop: 12,
+      fontSize: 12,
+      letterSpacing: 0.4,
+      color: c.muted,
+      textAlign: "center",
+    },
 
     controlsCard: {
       width: "100%",
@@ -360,12 +499,33 @@ const makeStyles = (c: ReturnType<typeof getTheme>["colors"]) =>
     },
 
     section: { marginTop: 10 },
-    label: { fontSize: 11, fontWeight: "900", color: c.muted, textTransform: "uppercase", letterSpacing: 1.6, marginBottom: 8 },
+    label: {
+      fontSize: 11,
+      fontWeight: "900",
+      color: c.muted,
+      textTransform: "uppercase",
+      letterSpacing: 1.6,
+      marginBottom: 8,
+    },
 
-    segmentWrap: { flexDirection: "row", backgroundColor: c.segmentBg, borderRadius: 12, borderWidth: 1, borderColor: c.border, padding: 3, gap: 6 },
+    segmentWrap: {
+      flexDirection: "row",
+      backgroundColor: c.segmentBg,
+      borderRadius: 12,
+      borderWidth: 1,
+      borderColor: c.border,
+      padding: 3,
+      gap: 6,
+    },
     segment: { flex: 1, paddingVertical: 8, borderRadius: 10, alignItems: "center" },
     segmentActive: { backgroundColor: c.green },
-    segmentText: { fontWeight: "900", color: c.text, fontSize: 12, letterSpacing: 0.8, textAlign: "center" },
+    segmentText: {
+      fontWeight: "900",
+      color: c.text,
+      fontSize: 12,
+      letterSpacing: 0.8,
+      textAlign: "center",
+    },
     segmentTextActive: { color: "white", letterSpacing: 0.8, textAlign: "center" },
 
     pinBox: {
@@ -378,7 +538,13 @@ const makeStyles = (c: ReturnType<typeof getTheme>["colors"]) =>
       borderRadius: 18,
       padding: 14,
     },
-    pinTitle: { color: c.text, fontSize: 16, fontWeight: "900", letterSpacing: 0.6, marginBottom: 10 },
+    pinTitle: {
+      color: c.text,
+      fontSize: 16,
+      fontWeight: "900",
+      letterSpacing: 0.6,
+      marginBottom: 10,
+    },
     pinInput: {
       borderWidth: 1,
       borderColor: c.border,
@@ -393,8 +559,22 @@ const makeStyles = (c: ReturnType<typeof getTheme>["colors"]) =>
       textAlign: "center",
     },
     pinButtonsRow: { flexDirection: "row", justifyContent: "space-between", marginTop: 12 },
-    pinCancelBtn: { backgroundColor: c.card, borderWidth: 1, borderColor: c.border, paddingVertical: 10, paddingHorizontal: 14, borderRadius: 999 },
+    pinCancelBtn: {
+      backgroundColor: c.card,
+      borderWidth: 1,
+      borderColor: c.border,
+      paddingVertical: 10,
+      paddingHorizontal: 14,
+      borderRadius: 999,
+    },
     pinCancelText: { color: c.text, fontWeight: "900", letterSpacing: 0.6 },
-    pinConfirmBtn: { backgroundColor: c.green, borderWidth: 1, borderColor: c.green, paddingVertical: 10, paddingHorizontal: 14, borderRadius: 999 },
+    pinConfirmBtn: {
+      backgroundColor: c.green,
+      borderWidth: 1,
+      borderColor: c.green,
+      paddingVertical: 10,
+      paddingHorizontal: 14,
+      borderRadius: 999,
+    },
     pinConfirmText: { color: "white", fontWeight: "900", letterSpacing: 0.6 },
   });

@@ -10,7 +10,9 @@
     "newArchEnabled": true,
 
     "extra": {
-      "publicBaseUrl": "https://unattempted-ricky-cloudily.ngrok-free.dev"
+      "publicBaseUrl": "https://unattempted-ricky-cloudily.ngrok-free.dev",
+      "supabaseUrl": "https://nisyastrrlgztacbzded.supabase.co",
+      "supabaseAnonKey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5pc3lhc3RycmxnenRhY2J6ZGVkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjgxNDc4MDksImV4cCI6MjA4MzcyMzgwOX0.dyQReefnmYoiCcm7BhKOzwckEYirGoQ48nhJVKnBH9E"
     },
 
     "ios": {

@@ -93,6 +93,7 @@ export default function ScanScreen() {
         open: "Abrir",
         allowCamera: "Permitir cámara",
         needPermission: "Se necesita permiso de cámara para escanear QR.",
+        loadingPermission: "Cargando permisos de cámara…",
         pointCamera: "Apunta la cámara al QR",
         scannedOk: "Escaneado ✓",
         scanAgain: "Escanear otra vez",
@@ -111,6 +112,7 @@ export default function ScanScreen() {
       open: "Open",
       allowCamera: "Allow Camera",
       needPermission: "Camera permission is required to scan QR codes.",
+      loadingPermission: "Loading camera permissions…",
       pointCamera: "Point the camera at a QR",
       scannedOk: "Scanned ✓",
       scanAgain: "Scan again",
@@ -142,18 +144,9 @@ export default function ScanScreen() {
     cooldownRef.current = false;
   }, []);
 
-  useEffect(() => {
-    if (Platform.OS === "web") return;
-    if (!permission) return;
-
-    // ✅ Ask permission once if not granted
-    if (!permission.granted && permission.canAskAgain) {
-      requestPermission();
-    }
-  }, [permission, requestPermission]);
-
   const goBack = () => {
     setScanned(false);
+    cooldownRef.current = false;
     router.replace("/catalog");
   };
 
@@ -163,7 +156,6 @@ export default function ScanScreen() {
       return;
     }
 
-    // ✅ hard validate again
     const clean = maybeId.toUpperCase().trim();
     if (!/^LOT-[A-Z0-9-]+$/.test(clean)) {
       Alert.alert(s.invalidLot, s.missingLot);
@@ -185,7 +177,6 @@ export default function ScanScreen() {
       return;
     }
 
-    // ✅ prevent double-trigger while routing
     cooldown(1200);
     goToLot(id);
   };
@@ -197,6 +188,23 @@ export default function ScanScreen() {
       return;
     }
     goToLot(id);
+  };
+
+  const renderPermissionBox = (text: string) => {
+    return (
+      <View style={styles.webBox}>
+        <Text style={styles.webText}>{text}</Text>
+        <Pressable
+          onPress={requestPermission}
+          style={({ pressed }) => [
+            styles.primaryBtn,
+            pressed && styles.pressed,
+          ]}
+        >
+          <Text style={styles.primaryBtnText}>{s.allowCamera}</Text>
+        </Pressable>
+      </View>
+    );
   };
 
   return (
@@ -236,19 +244,12 @@ export default function ScanScreen() {
             <Text style={styles.primaryBtnText}>{s.open}</Text>
           </Pressable>
         </View>
-      ) : !permission?.granted ? (
+      ) : permission == null ? (
         <View style={styles.webBox}>
-          <Text style={styles.webText}>{s.needPermission}</Text>
-          <Pressable
-            onPress={requestPermission}
-            style={({ pressed }) => [
-              styles.primaryBtn,
-              pressed && styles.pressed,
-            ]}
-          >
-            <Text style={styles.primaryBtnText}>{s.allowCamera}</Text>
-          </Pressable>
+          <Text style={styles.webText}>{s.loadingPermission}</Text>
         </View>
+      ) : !permission.granted ? (
+        renderPermissionBox(s.needPermission)
       ) : (
         <View style={styles.cameraWrap}>
           <CameraView
@@ -297,7 +298,12 @@ const makeStyles = (c: ThemeColors) =>
       marginBottom: 12,
       gap: 10,
     },
-    title: { color: c.text, fontSize: 18, fontWeight: "900", letterSpacing: 0.6 },
+    title: {
+      color: c.text,
+      fontSize: 18,
+      fontWeight: "900",
+      letterSpacing: 0.6,
+    },
 
     backBtn: {
       backgroundColor: c.card,

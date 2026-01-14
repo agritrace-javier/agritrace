@@ -1,6 +1,7 @@
 // app/lot/[id].tsx
 import * as Clipboard from "expo-clipboard";
 import Constants from "expo-constants";
+import * as ImagePicker from "expo-image-picker";
 import * as Linking from "expo-linking";
 import * as Print from "expo-print";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -22,7 +23,7 @@ import {
 import { computeLotHash } from "../hash";
 import type { Lang } from "../i18n";
 import { t as I18N } from "../i18n";
-import { getProductLabel, Lot } from "../lots";
+import { getProductLabel, type Lot } from "../lots";
 import { useLots } from "../lots-store";
 import { verifyOnStarknetSim, type StarknetSimResult } from "../starknet-sim";
 import { storageGet, storageSet } from "../storage";
@@ -90,17 +91,12 @@ try {
 
 /** ---------------------------
  * ✅ Public Base URL helper (NGROK friendly)
- * Priority:
- *  1) app.json -> expo.extra.publicBaseUrl (ngrok)
- *  2) web origin
- *  3) expo Linking fallback (scheme / dev)
  * --------------------------*/
 function normalizeBaseUrl(u: string) {
   return u.replace(/\/+$/, "");
 }
 
 function getPublicBaseUrl(): string {
-  // Expo SDK versions differ; try all common places
   const extra1 = (Constants.expoConfig as any)?.extra?.publicBaseUrl;
   const extra2 = (Constants.manifest as any)?.extra?.publicBaseUrl;
   const raw = extra1 ?? extra2;
@@ -115,7 +111,6 @@ function getPublicBaseUrl(): string {
     if (origin) return normalizeBaseUrl(origin);
   }
 
-  // fallback (not "real web", but avoids empty)
   try {
     const base = Linking.createURL("/");
     return normalizeBaseUrl(base);
@@ -145,6 +140,34 @@ function formatDate(ts?: number) {
   }
 }
 
+/** ---------------------------
+ * ✅ WEB ONLY: blob/object URL -> data URL (persists after refresh)
+ * --------------------------*/
+async function webUriToDataUrl(uri: string): Promise<string> {
+  if (!uri) return "";
+  if (uri.startsWith("data:")) return uri;
+
+  const res = await fetch(uri);
+  const blob = await res.blob();
+
+  const dataUrl: string = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("FileReader failed"));
+    reader.onload = () => resolve(String(reader.result ?? ""));
+    reader.readAsDataURL(blob);
+  });
+
+  return dataUrl;
+}
+
+function cleanUriList(input: any): string[] {
+  if (!Array.isArray(input)) return [];
+  return input
+    .map((u: any) => String(u ?? "").trim())
+    .filter(Boolean)
+    .slice(0, 30);
+}
+
 export default function LotDetailsScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ id?: string | string[] }>();
@@ -152,6 +175,7 @@ export default function LotDetailsScreen() {
 
   const {
     getLotById,
+    updateLot,
     lang,
     setLang,
     mode,
@@ -172,8 +196,79 @@ export default function LotDetailsScreen() {
   const styles = useMemo(() => makeStyles(c), [c]);
 
   const lot = (lotId ? getLotById(lotId) : undefined) as Lot | undefined;
-  const photos = useMemo(() => (lot ? getProductPhotos(lot) : []), [lot]);
+  const demoPhotos = useMemo(() => (lot ? getProductPhotos(lot) : []), [lot]);
+
+  // ✅ SINGLE SOURCE OF TRUTH
   const isOperator = mode === "operator";
+
+  // ✅ Uploaded photos from lot (photos?: string[])
+  const uploadedPhotos = useMemo(() => {
+    const raw = (lot as any)?.photos;
+    return cleanUriList(raw).slice(0, 12);
+  }, [lot?.id, (lot as any)?.photos]);
+
+  // Optional createdAt stored in lot
+  const createdAt = useMemo(() => {
+    const ts = (lot as any)?.createdAt;
+    return typeof ts === "number" ? ts : undefined;
+  }, [lot?.id, (lot as any)?.createdAt]);
+
+  const ui = useMemo(() => {
+    return {
+      editLot: lang === "es" ? "Editar lote" : "Edit lot",
+
+      // Photos controls (operator)
+      managePhotosTitle: lang === "es" ? "Fotos del producto" : "Product photos",
+      managePhotosSub:
+        lang === "es"
+          ? "Fotos reales subidas por el operador. Puedes añadir o quitar fotos."
+          : "Real photos uploaded by the operator. You can add or remove photos.",
+      uploadPhotos: lang === "es" ? "Subir fotos" : "Upload photos",
+      uploading: lang === "es" ? "Procesando…" : "Processing…",
+      removePhoto: lang === "es" ? "Quitar" : "Remove",
+      noUploadedPhotos:
+        lang === "es"
+          ? "Aún no hay fotos reales subidas para este lote."
+          : "No real photos uploaded yet for this lot.",
+      removePhotoQ: lang === "es" ? "Quitar foto" : "Remove photo",
+      removePhotoBody:
+        lang === "es"
+          ? "¿Quieres quitar esta foto del lote?"
+          : "Do you want to remove this photo from the lot?",
+      removed: lang === "es" ? "Foto removida." : "Photo removed.",
+      permDenied:
+        lang === "es"
+          ? "Permiso denegado. Activa acceso a Fotos en Settings y vuelve a intentar."
+          : "Permission denied. Enable Photos access in Settings and try again.",
+      pickFailed:
+        lang === "es"
+          ? "No se pudieron seleccionar fotos."
+          : "Could not pick photos.",
+      maxPhotos:
+        lang === "es" ? "Máximo 12 fotos por lote." : "Max 12 photos per lot.",
+
+      demoPhotosTitle: lang === "es" ? "Fotos (demo)" : "Photos (demo)",
+      demoPhotosSub:
+        lang === "es"
+          ? "Fotos de ejemplo por producto (solo demo)."
+          : "Example product photos (demo only).",
+
+      statusTitle: lang === "es" ? "Estado de verificación" : "Verification status",
+      statusNotVerified: lang === "es" ? "NO VERIFICADO" : "NOT VERIFIED",
+      statusVerified: lang === "es" ? "VERIFICADO" : "VERIFIED",
+      statusTampered: lang === "es" ? "MANIPULADO" : "TAMPERED",
+
+      timelineTitle: lang === "es" ? "Timeline de verificación" : "Verification timeline",
+      stepCreated: lang === "es" ? "Creado" : "Created",
+      stepHashed: lang === "es" ? "Hashed" : "Hashed",
+      stepVerified: lang === "es" ? "Verificado" : "Verified",
+
+      tamperedHint:
+        lang === "es"
+          ? "El lote cambió después de verificarse. Esto indica manipulación o actualización no verificada."
+          : "This lot changed after it was verified. This indicates tampering or an unverified update.",
+    };
+  }, [lang]);
 
   // ✅ Existing proof from store (persisted)
   const existingProof = useMemo(() => {
@@ -181,7 +276,7 @@ export default function LotDetailsScreen() {
     return getProofByLotId(lot.id);
   }, [lot?.id, getProofByLotId]);
 
-  // ✅ QR value: REAL HTTPS link (NGROK) so phone camera opens browser -> /lot/ID
+  // ✅ QR value: REAL HTTPS link (NGROK)
   const qrValue = useMemo(() => {
     if (!lot) return "";
     const id = encodeURIComponent(lot.id);
@@ -189,9 +284,8 @@ export default function LotDetailsScreen() {
     const base = getPublicBaseUrl();
     if (!base) return "";
 
-    // Always a web route, so camera scanning opens it like a real product
     return `${base}/lot/${id}`;
-  }, [lot]);
+  }, [lot?.id]);
 
   const qrText = useMemo(() => {
     if (lang === "es") {
@@ -218,7 +312,6 @@ export default function LotDetailsScreen() {
     };
   }, [lang]);
 
-  // ✅ Certificate strings
   const certText = useMemo(() => {
     if (lang === "es") {
       return {
@@ -265,6 +358,9 @@ export default function LotDetailsScreen() {
   const [verifying, setVerifying] = useState(false);
   const [simResult, setSimResult] = useState<StarknetSimResult | null>(null);
 
+  // ✅ Photo upload busy (web conversion)
+  const [busyPhotos, setBusyPhotos] = useState(false);
+
   // ✅ LOAD reviews/rating
   useEffect(() => {
     let mounted = true;
@@ -298,6 +394,11 @@ export default function LotDetailsScreen() {
   }, [lotId, rating, reviews]);
 
   // ✅ COMPUTE HASH when lot changes
+  const photosSignature = useMemo(() => {
+    const arr = cleanUriList((lot as any)?.photos);
+    return arr.join("|");
+  }, [lot?.id, (lot as any)?.photos]);
+
   useEffect(() => {
     let mounted = true;
     if (!lot) return;
@@ -318,7 +419,16 @@ export default function LotDetailsScreen() {
     return () => {
       mounted = false;
     };
-  }, [lot?.id]);
+  }, [
+    lot?.id,
+    photosSignature,
+    (lot as any)?.notes,
+    (lot as any)?.batch,
+    (lot as any)?.origin,
+    (lot as any)?.harvestDate,
+    (lot as any)?.product_en,
+    (lot as any)?.product_es,
+  ]);
 
   // ✅ Sync UI with stored proof (persisted)
   useEffect(() => {
@@ -337,9 +447,118 @@ export default function LotDetailsScreen() {
     } else {
       setSimResult(null);
     }
-  }, [lot?.id, existingProof]);
+  }, [lot?.id, existingProof?.txHash, existingProof?.blockNumber, existingProof?.ts]);
 
   const goBack = () => router.replace("/catalog");
+
+  const onEditLot = () => {
+    if (!lot) return;
+    if (!isOperator) return;
+
+    router.push(
+      {
+        pathname: "/edit-lot/[id]",
+        params: { id: lot.id },
+      } as any
+    );
+  };
+
+  /** ✅ Photo picking (Operator only) — PERSISTENT on Web */
+  const requestPhotoPermissionIfNeeded = async () => {
+    if (Platform.OS === "web") return true;
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== "granted") {
+      Alert.alert("AgriTrace", ui.permDenied);
+      return false;
+    }
+    return true;
+  };
+
+  const onPickMorePhotos = async () => {
+    if (!lot) return;
+    if (!isOperator) return;
+
+    try {
+      const ok = await requestPhotoPermissionIfNeeded();
+      if (!ok) return;
+
+      const current = cleanUriList((lot as any)?.photos).slice(0, 30);
+      const remaining = Math.max(0, 12 - current.length);
+      if (remaining <= 0) {
+        if (Platform.OS === "web") {
+          // @ts-ignore
+          globalThis?.alert?.(ui.maxPhotos);
+        } else {
+          Alert.alert("AgriTrace", ui.maxPhotos);
+        }
+        return;
+      }
+
+      const res = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        quality: 0.85,
+        allowsEditing: false,
+        allowsMultipleSelection: true as any,
+        selectionLimit: remaining as any,
+      });
+
+      if (res.canceled) return;
+
+      const picked = (res.assets ?? [])
+        .map((a) => a?.uri)
+        .filter((u): u is string => !!u);
+
+      if (picked.length === 0) return;
+
+      if (Platform.OS === "web") {
+        setBusyPhotos(true);
+        try {
+          const converted: string[] = [];
+          for (const uri of picked) {
+            const dataUrl = await webUriToDataUrl(uri);
+            if (dataUrl) converted.push(dataUrl);
+          }
+          const next = [...current, ...converted].slice(0, 12);
+          updateLot(lot.id, { photos: next });
+        } finally {
+          setBusyPhotos(false);
+        }
+        return;
+      }
+
+      // Native
+      const next = [...current, ...picked].slice(0, 12);
+      updateLot(lot.id, { photos: next });
+    } catch {
+      setBusyPhotos(false);
+      Alert.alert("AgriTrace", ui.pickFailed);
+    }
+  };
+
+  const onRemoveUploadedPhoto = (uri: string) => {
+    if (!lot) return;
+    if (!isOperator) return;
+
+    Alert.alert(ui.removePhotoQ, ui.removePhotoBody, [
+      { text: tt.cancel, style: "cancel" },
+      {
+        text: ui.removePhoto,
+        style: "destructive",
+        onPress: () => {
+          const current = cleanUriList((lot as any)?.photos);
+          const next = current.filter((x) => String(x) !== String(uri));
+          updateLot(lot.id, { photos: next });
+
+          if (Platform.OS === "web") {
+            // @ts-ignore
+            globalThis?.alert?.(ui.removed);
+          } else {
+            Alert.alert(lang === "es" ? "Listo" : "Done", ui.removed);
+          }
+        },
+      },
+    ]);
+  };
 
   const onCopyId = async () => {
     if (!lotId) return;
@@ -369,8 +588,7 @@ export default function LotDetailsScreen() {
     if (!hashHex || hashHex === "—") return;
     await Clipboard.setStringAsync(hashHex);
 
-    const msg =
-      lang === "es" ? `Hash copiado: ${hashHex}` : `Hash copied: ${hashHex}`;
+    const msg = lang === "es" ? `Hash copiado: ${hashHex}` : `Hash copied: ${hashHex}`;
     if (Platform.OS === "web") {
       // @ts-ignore
       globalThis?.alert?.(msg);
@@ -399,6 +617,8 @@ export default function LotDetailsScreen() {
       ? `TX: ${existingProof.txHash}\nBlock: ${existingProof.blockNumber}\n`
       : "";
 
+    const photosLine = uploadedPhotos.length > 0 ? `Photos: ${uploadedPhotos.length}\n` : "";
+
     const message =
       `AgriTrace Lot\n` +
       `ID: ${lot.id}\n` +
@@ -408,6 +628,7 @@ export default function LotDetailsScreen() {
       `Batch: ${lot.batch}\n` +
       `Rating: ${rating || 0}/5\n` +
       `Hash: ${hashHex}\n` +
+      photosLine +
       proofLine +
       `QR: ${qrValue}`;
 
@@ -442,7 +663,7 @@ export default function LotDetailsScreen() {
     Alert.alert(tt.operatorEnabled, tt.nowOperator);
   };
 
-  // ⭐ Operator-only rating (CLIENT NO puede cambiar estrellas)
+  // ⭐ Operator-only rating
   const onSetRating = (n: number) => {
     if (!isOperator) return;
     setRating(n);
@@ -472,8 +693,7 @@ export default function LotDetailsScreen() {
       {
         text: tt.delete,
         style: "destructive",
-        onPress: () =>
-          setReviews((prev) => prev.filter((r) => r.id !== reviewId)),
+        onPress: () => setReviews((prev) => prev.filter((r) => r.id !== reviewId)),
       },
     ]);
   };
@@ -531,10 +751,9 @@ export default function LotDetailsScreen() {
         payload: hashPayload,
       });
 
-      // ✅ update local UI
       setSimResult(res);
 
-      // ✅ persist proof in store (web + mobile)
+      // ✅ persist proof in store
       setProofForLot({
         lotId: lot.id,
         hash: hashHex,
@@ -588,8 +807,7 @@ export default function LotDetailsScreen() {
     clearProofForLot(lot.id);
     setSimResult(null);
 
-    const msg =
-      lang === "es" ? "Verificación borrada." : "Verification cleared.";
+    const msg = lang === "es" ? "Verificación borrada." : "Verification cleared.";
     if (Platform.OS === "web") {
       // @ts-ignore
       globalThis?.alert?.(msg);
@@ -604,27 +822,75 @@ export default function LotDetailsScreen() {
   }, [existingProof?.ts]);
 
   /** ---------------------------
+   * ✅ STATUS + TIMELINE
+   * --------------------------*/
+  type VerifyStatus = "not_verified" | "verified" | "tampered";
+
+  const status: VerifyStatus = useMemo(() => {
+    if (!existingProof?.txHash) return "not_verified";
+    if (existingProof?.hash && hashHex !== "—" && existingProof.hash !== hashHex) return "tampered";
+    return "verified";
+  }, [existingProof?.txHash, existingProof?.hash, hashHex]);
+
+  const statusLabel = useMemo(() => {
+    if (status === "verified") return ui.statusVerified;
+    if (status === "tampered") return ui.statusTampered;
+    return ui.statusNotVerified;
+  }, [status, ui.statusVerified, ui.statusTampered, ui.statusNotVerified]);
+
+  const statusDotStyle = useMemo(() => {
+    if (status === "verified") return styles.dotVerified;
+    if (status === "tampered") return styles.dotTampered;
+    return styles.dotNotVerified;
+  }, [status, styles.dotVerified, styles.dotTampered, styles.dotNotVerified]);
+
+  const statusPillStyle = useMemo(() => {
+    if (status === "verified") return styles.statusVerified;
+    if (status === "tampered") return styles.statusTampered;
+    return styles.statusNotVerified;
+  }, [status, styles.statusVerified, styles.statusTampered, styles.statusNotVerified]);
+
+  const timeline = useMemo(() => {
+    const hashedReady = hashHex !== "—";
+    const verifiedTs = existingProof?.ts;
+
+    return {
+      created: createdAt ? formatDate(createdAt) : "",
+      hashed: hashedReady ? (lang === "es" ? "Listo ✓" : "Ready ✓") : "",
+      verified: verifiedTs ? formatDate(verifiedTs) : "",
+    };
+  }, [createdAt, hashHex, existingProof?.ts, lang]);
+
+  /** ---------------------------
    * ✅ Certificate (PDF)
-   * - Mobile: generate file + share
-   * - Web: print dialog (Save as PDF)
    * --------------------------*/
   const buildCertificateHtml = () => {
     if (!lot) return "";
 
     const product = getProductLabel(lot, lang);
-    const verified = !!existingProof?.txHash;
+    const verified = status === "verified";
 
     const txHash = existingProof?.txHash ?? "";
     const blockNumber =
-      typeof existingProof?.blockNumber === "number"
-        ? String(existingProof.blockNumber)
-        : "";
+      typeof existingProof?.blockNumber === "number" ? String(existingProof.blockNumber) : "";
     const vDate = existingProof?.ts ? formatDate(existingProof.ts) : "";
 
-    const logoText = "AgriTrace";
-    const badge = verified ? certText.verified : certText.notVerified;
+    const badge =
+      status === "verified"
+        ? certText.verified
+        : status === "tampered"
+        ? lang === "es"
+          ? "MANIPULADO"
+          : "TAMPERED"
+        : certText.notVerified;
 
-    // We keep it simple and solid (printable)
+    const tamperedNote =
+      status === "tampered"
+        ? lang === "es"
+          ? "⚠️ Este lote está marcado como MANIPULADO: el hash actual no coincide con el hash verificado."
+          : "⚠️ This lot is marked as TAMPERED: current hash does not match verified hash."
+        : "";
+
     return `<!doctype html>
 <html>
 <head>
@@ -636,7 +902,9 @@ export default function LotDetailsScreen() {
     .wrap { max-width: 860px; margin: 0 auto; border: 1px solid #e5e7eb; border-radius: 16px; overflow: hidden; }
     .top { padding: 18px 20px; background: #0b1220; color: #fff; display: flex; justify-content: space-between; align-items: center; gap: 14px; }
     .brand { font-weight: 800; letter-spacing: .8px; font-size: 16px; }
-    .badge { background: ${verified ? "#16a34a" : "#6b7280"}; color: #fff; padding: 8px 12px; border-radius: 999px; font-weight: 800; letter-spacing: .6px; font-size: 12px; }
+    .badge { background: ${
+      verified ? "#16a34a" : status === "tampered" ? "#dc2626" : "#6b7280"
+    }; color: #fff; padding: 8px 12px; border-radius: 999px; font-weight: 800; letter-spacing: .6px; font-size: 12px; }
     .content { padding: 18px 20px; }
     .h1 { font-size: 22px; font-weight: 900; margin: 0; letter-spacing: .3px; }
     .sub { margin-top: 6px; color: #6b7280; font-weight: 700; }
@@ -646,6 +914,7 @@ export default function LotDetailsScreen() {
     .v { margin-top: 6px; font-weight: 800; font-size: 14px; word-break: break-word; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 12px; font-weight: 800; }
     .footer { padding: 14px 20px; border-top: 1px solid #e5e7eb; color: #6b7280; font-weight: 700; font-size: 12px; line-height: 1.4; }
+    .warn { margin-top: 12px; padding: 12px; border-radius: 12px; border: 1px solid #fecaca; background: #fee2e2; color: #7f1d1d; font-weight: 800; }
     .qr { margin-top: 8px; }
     .small { font-size: 12px; }
   </style>
@@ -653,13 +922,15 @@ export default function LotDetailsScreen() {
 <body>
   <div class="wrap">
     <div class="top">
-      <div class="brand">${escapeHtml(logoText)}</div>
+      <div class="brand">${escapeHtml("AgriTrace")}</div>
       <div class="badge">${escapeHtml(badge)}</div>
     </div>
 
     <div class="content">
       <p class="h1">${escapeHtml(certText.title)}</p>
       <div class="sub">${escapeHtml(certText.subtitle)}</div>
+
+      ${tamperedNote ? `<div class="warn">${escapeHtml(tamperedNote)}</div>` : ``}
 
       <div class="grid">
         <div class="box">
@@ -683,24 +954,24 @@ export default function LotDetailsScreen() {
         </div>
 
         <div class="box">
-          <div class="k">${escapeHtml(lang === "es" ? "Batch" : "Batch")}</div>
+          <div class="k">${escapeHtml("Batch")}</div>
           <div class="v">${escapeHtml(lot.batch)}</div>
         </div>
 
         <div class="box">
-          <div class="k">${escapeHtml(lang === "es" ? "Rating" : "Rating")}</div>
+          <div class="k">${escapeHtml("Rating")}</div>
           <div class="v">${escapeHtml(String(rating || 0))}/5</div>
         </div>
 
         <div class="box">
-          <div class="k">${escapeHtml(lang === "es" ? "Hash (SHA-256)" : "Hash (SHA-256)")}</div>
+          <div class="k">${escapeHtml("Hash (SHA-256)")}</div>
           <div class="v mono">${escapeHtml(hashHex)}</div>
         </div>
 
         <div class="box">
           <div class="k">${escapeHtml(lang === "es" ? "Verificación" : "Verification")}</div>
           <div class="v small">
-            <div><b>${escapeHtml(lang === "es" ? "TX" : "TX")}:</b> <span class="mono">${escapeHtml(txHash || "-")}</span></div>
+            <div><b>${escapeHtml("TX")}:</b> <span class="mono">${escapeHtml(txHash || "-")}</span></div>
             <div><b>${escapeHtml(lang === "es" ? "Bloque" : "Block")}:</b> ${escapeHtml(blockNumber || "-")}</div>
             <div><b>${escapeHtml(lang === "es" ? "Fecha" : "Date")}:</b> ${escapeHtml(vDate || "-")}</div>
           </div>
@@ -734,16 +1005,13 @@ export default function LotDetailsScreen() {
     }
 
     try {
-      // WEB: open print dialog (user can Save as PDF)
       if (Platform.OS === "web") {
-        // optional small hint
         // @ts-ignore
         globalThis?.alert?.(certText.printing);
         await Print.printAsync({ html });
         return;
       }
 
-      // NATIVE: create PDF file and share it
       const file = await Print.printToFileAsync({ html });
       const uri = file?.uri;
 
@@ -757,16 +1025,11 @@ export default function LotDetailsScreen() {
         await Sharing.shareAsync(uri, {
           mimeType: "application/pdf",
           UTI: "com.adobe.pdf",
-          dialogTitle:
-            lang === "es" ? "Compartir certificado" : "Share certificate",
+          dialogTitle: lang === "es" ? "Compartir certificado" : "Share certificate",
         });
       } else {
-        // fallback
         await Share.share({
-          message:
-            lang === "es"
-              ? "Certificado generado."
-              : "Certificate generated.",
+          message: lang === "es" ? "Certificado generado." : "Certificate generated.",
           url: uri,
         });
       }
@@ -801,12 +1064,7 @@ export default function LotDetailsScreen() {
                 pressed && styles.pressed,
               ]}
             >
-              <Text
-                style={[
-                  styles.langText,
-                  lang === "en" && styles.langTextActive,
-                ]}
-              >
+              <Text style={[styles.langText, lang === "en" && styles.langTextActive]}>
                 EN
               </Text>
             </Pressable>
@@ -819,12 +1077,7 @@ export default function LotDetailsScreen() {
                 pressed && styles.pressed,
               ]}
             >
-              <Text
-                style={[
-                  styles.langText,
-                  lang === "es" && styles.langTextActive,
-                ]}
-              >
+              <Text style={[styles.langText, lang === "es" && styles.langTextActive]}>
                 ES
               </Text>
             </Pressable>
@@ -833,22 +1086,25 @@ export default function LotDetailsScreen() {
           <Text style={styles.modeBadge}>{isOperator ? tt.operator : tt.client}</Text>
 
           {isOperator ? (
-            <Pressable
-              onPress={exitToClient}
-              style={({ pressed }) => [
-                styles.secondaryBtn,
-                pressed && styles.pressed,
-              ]}
-            >
-              <Text style={styles.secondaryBtnText}>{tt.exit}</Text>
-            </Pressable>
+            <>
+              <Pressable
+                onPress={onEditLot}
+                style={({ pressed }) => [styles.secondaryBtn, pressed && styles.pressed]}
+              >
+                <Text style={styles.secondaryBtnText}>{ui.editLot}</Text>
+              </Pressable>
+
+              <Pressable
+                onPress={exitToClient}
+                style={({ pressed }) => [styles.secondaryBtn, pressed && styles.pressed]}
+              >
+                <Text style={styles.secondaryBtnText}>{tt.exit}</Text>
+              </Pressable>
+            </>
           ) : (
             <Pressable
               onPress={openPin}
-              style={({ pressed }) => [
-                styles.secondaryBtn,
-                pressed && styles.pressed,
-              ]}
+              style={({ pressed }) => [styles.secondaryBtn, pressed && styles.pressed]}
             >
               <Text style={styles.secondaryBtnText}>{tt.enterOperator}</Text>
             </Pressable>
@@ -856,11 +1112,7 @@ export default function LotDetailsScreen() {
         </View>
       </View>
 
-      {/* Scroll */}
-      <ScrollView
-        contentContainerStyle={styles.scrollContent}
-        showsVerticalScrollIndicator
-      >
+      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator>
         <Text style={styles.title}>{tt.lotDetailsTitle}</Text>
 
         {!lotId ? (
@@ -873,6 +1125,46 @@ export default function LotDetailsScreen() {
           <View style={styles.card}>
             <Text style={styles.bigProduct}>{getProductLabel(lot, lang)}</Text>
             <Text style={styles.badge}>{lot.id}</Text>
+
+            {/* ✅ STATUS */}
+            <View style={styles.statusBox}>
+              <View style={styles.statusTopRow}>
+                <Text style={styles.sectionTitle}>{ui.statusTitle}</Text>
+
+                <View style={[styles.statusPill, statusPillStyle]}>
+                  <View style={styles.statusPillInner}>
+                    <View style={[styles.statusDot, statusDotStyle]} />
+                    <Text style={styles.statusPillText}>{statusLabel}</Text>
+                  </View>
+                </View>
+              </View>
+
+              {status === "tampered" ? (
+                <Text style={styles.tamperedHint}>⚠️ {ui.tamperedHint}</Text>
+              ) : null}
+            </View>
+
+            {/* ✅ TIMELINE */}
+            <View style={styles.timelineBox}>
+              <Text style={styles.sectionTitle}>{ui.timelineTitle}</Text>
+
+              <View style={styles.timelineRow}>
+                <Text style={styles.timelineLabel}>{ui.stepCreated}</Text>
+                <Text style={styles.timelineValue}>{timeline.created || "—"}</Text>
+              </View>
+
+              <View style={styles.timelineRow}>
+                <Text style={styles.timelineLabel}>{ui.stepHashed}</Text>
+                <Text style={styles.timelineValue}>{timeline.hashed || "—"}</Text>
+              </View>
+
+              <View style={styles.timelineRow}>
+                <Text style={styles.timelineLabel}>{ui.stepVerified}</Text>
+                <Text style={[styles.timelineValue, status === "tampered" && { color: "#dc2626" }]}>
+                  {timeline.verified || "—"}
+                </Text>
+              </View>
+            </View>
 
             {/* ✅ QR */}
             <View style={styles.qrBox}>
@@ -890,10 +1182,7 @@ export default function LotDetailsScreen() {
               <View style={styles.qrActions}>
                 <Pressable
                   onPress={onCopyQrLink}
-                  style={({ pressed }) => [
-                    styles.qrBtn,
-                    pressed && styles.pressed,
-                  ]}
+                  style={({ pressed }) => [styles.qrBtn, pressed && styles.pressed]}
                 >
                   <Text style={styles.qrBtnText}>{qrText.qrCopy}</Text>
                 </Pressable>
@@ -904,14 +1193,67 @@ export default function LotDetailsScreen() {
               </Text>
             </View>
 
-            {/* Photos */}
-            {photos.length > 0 ? (
-              <View style={styles.photosRow}>
-                {photos.map((img, idx) => (
-                  <View key={idx} style={styles.photoWrap}>
-                    <Image source={img} style={styles.photo} />
-                  </View>
-                ))}
+            {/* ✅ Photos (REAL uploaded) + controls */}
+            <View style={styles.photosSection}>
+              <View style={styles.photosHeaderRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.sectionTitle}>{ui.managePhotosTitle}</Text>
+                  <Text style={styles.sectionSub}>
+                    {ui.managePhotosSub} {ui.maxPhotos}
+                  </Text>
+                </View>
+
+                {isOperator ? (
+                  <Pressable
+                    onPress={onPickMorePhotos}
+                    disabled={busyPhotos}
+                    style={({ pressed }) => [
+                      styles.photoActionBtn,
+                      pressed && !busyPhotos && styles.pressed,
+                      busyPhotos && styles.disabled,
+                    ]}
+                  >
+                    <Text style={styles.photoActionBtnText}>
+                      {busyPhotos ? ui.uploading : ui.uploadPhotos}
+                    </Text>
+                  </Pressable>
+                ) : null}
+              </View>
+
+              {uploadedPhotos.length === 0 ? (
+                <Text style={styles.emptyPhotos}>{ui.noUploadedPhotos}</Text>
+              ) : (
+                <View style={styles.photosRow}>
+                  {uploadedPhotos.map((uri) => (
+                    <View key={uri} style={styles.photoCard}>
+                      <Image source={{ uri }} style={styles.photo} />
+                      {isOperator ? (
+                        <Pressable
+                          onPress={() => onRemoveUploadedPhoto(uri)}
+                          style={({ pressed }) => [styles.photoRemoveBtn, pressed && styles.pressed]}
+                        >
+                          <Text style={styles.photoRemoveBtnText}>{ui.removePhoto}</Text>
+                        </Pressable>
+                      ) : null}
+                    </View>
+                  ))}
+                </View>
+              )}
+            </View>
+
+            {/* ✅ Demo Photos (optional) */}
+            {demoPhotos.length > 0 ? (
+              <View style={styles.photosSection}>
+                <Text style={styles.sectionTitle}>{ui.demoPhotosTitle}</Text>
+                <Text style={styles.sectionSub}>{ui.demoPhotosSub}</Text>
+
+                <View style={styles.photosRow}>
+                  {demoPhotos.map((img, idx) => (
+                    <View key={idx} style={styles.photoCard}>
+                      <Image source={img} style={styles.photo} />
+                    </View>
+                  ))}
+                </View>
               </View>
             ) : null}
 
@@ -932,12 +1274,7 @@ export default function LotDetailsScreen() {
                       !isOperator && styles.disabled,
                     ]}
                   >
-                    <Text
-                      style={[
-                        styles.star,
-                        n <= rating ? styles.starOn : styles.starOff,
-                      ]}
-                    >
+                    <Text style={[styles.star, n <= rating ? styles.starOn : styles.starOff]}>
                       ★
                     </Text>
                   </Pressable>
@@ -979,9 +1316,7 @@ export default function LotDetailsScreen() {
 
                 {existingProof ? (
                   <View style={styles.verifiedPill}>
-                    <Text style={styles.verifiedPillText}>
-                      {verifyText.verified}
-                    </Text>
+                    <Text style={styles.verifiedPillText}>{verifyText.verified}</Text>
                   </View>
                 ) : null}
               </View>
@@ -1005,27 +1340,17 @@ export default function LotDetailsScreen() {
                   <View style={styles.proofActions}>
                     <Pressable
                       onPress={onCopyTx}
-                      style={({ pressed }) => [
-                        styles.actionBtn,
-                        pressed && styles.pressed,
-                      ]}
+                      style={({ pressed }) => [styles.actionBtn, pressed && styles.pressed]}
                     >
-                      <Text style={styles.actionBtnText}>
-                        {verifyText.copyTx}
-                      </Text>
+                      <Text style={styles.actionBtnText}>{verifyText.copyTx}</Text>
                     </Pressable>
 
                     {isOperator ? (
                       <Pressable
                         onPress={onClearProof}
-                        style={({ pressed }) => [
-                          styles.clearBtn,
-                          pressed && styles.pressed,
-                        ]}
+                        style={({ pressed }) => [styles.clearBtn, pressed && styles.pressed]}
                       >
-                        <Text style={styles.clearBtnText}>
-                          {verifyText.clearProof}
-                        </Text>
+                        <Text style={styles.clearBtnText}>{verifyText.clearProof}</Text>
                       </Pressable>
                     ) : null}
                   </View>
@@ -1041,14 +1366,9 @@ export default function LotDetailsScreen() {
                 <View style={styles.hashActions}>
                   <Pressable
                     onPress={onCopyHash}
-                    style={({ pressed }) => [
-                      styles.actionBtn,
-                      pressed && styles.pressed,
-                    ]}
+                    style={({ pressed }) => [styles.actionBtn, pressed && styles.pressed]}
                   >
-                    <Text style={styles.actionBtnText}>
-                      {verifyText.copyHash}
-                    </Text>
+                    <Text style={styles.actionBtnText}>{verifyText.copyHash}</Text>
                   </Pressable>
 
                   <Pressable
@@ -1072,10 +1392,7 @@ export default function LotDetailsScreen() {
                 </Text>
                 <Pressable
                   onPress={onCopyPayload}
-                  style={({ pressed }) => [
-                    styles.payloadBtn,
-                    pressed && styles.pressed,
-                  ]}
+                  style={({ pressed }) => [styles.payloadBtn, pressed && styles.pressed]}
                 >
                   <Text style={styles.payloadBtnText}>
                     {lang === "es" ? "Copiar payload" : "Copy payload"}
@@ -1101,13 +1418,9 @@ export default function LotDetailsScreen() {
               ) : null}
 
               <View style={styles.actions}>
-                {/* ✅ NEW: Certificate export button */}
                 <Pressable
                   onPress={onExportCertificate}
-                  style={({ pressed }) => [
-                    styles.certificateBtn,
-                    pressed && styles.pressed,
-                  ]}
+                  style={({ pressed }) => [styles.certificateBtn, pressed && styles.pressed]}
                 >
                   <Text style={styles.certificateBtnText}>
                     {Platform.OS === "web" ? certText.btnWeb : certText.btnMobile}
@@ -1116,20 +1429,14 @@ export default function LotDetailsScreen() {
 
                 <Pressable
                   onPress={onCopyId}
-                  style={({ pressed }) => [
-                    styles.actionBtn,
-                    pressed && styles.pressed,
-                  ]}
+                  style={({ pressed }) => [styles.actionBtn, pressed && styles.pressed]}
                 >
                   <Text style={styles.actionBtnText}>{tt.copyId}</Text>
                 </Pressable>
 
                 <Pressable
                   onPress={onShare}
-                  style={({ pressed }) => [
-                    styles.actionBtn,
-                    pressed && styles.pressed,
-                  ]}
+                  style={({ pressed }) => [styles.actionBtn, pressed && styles.pressed]}
                 >
                   <Text style={styles.actionBtnText}>{tt.share}</Text>
                 </Pressable>
@@ -1152,10 +1459,7 @@ export default function LotDetailsScreen() {
               <View style={styles.reviewActions}>
                 <Pressable
                   onPress={onSubmitReview}
-                  style={({ pressed }) => [
-                    styles.reviewBtn,
-                    pressed && styles.pressed,
-                  ]}
+                  style={({ pressed }) => [styles.reviewBtn, pressed && styles.pressed]}
                 >
                   <Text style={styles.reviewBtnText}>{tt.submitReview}</Text>
                 </Pressable>
@@ -1177,14 +1481,9 @@ export default function LotDetailsScreen() {
                         {isOperator ? (
                           <Pressable
                             onPress={() => onDeleteReview(r.id)}
-                            style={({ pressed }) => [
-                              styles.reviewDeleteBtn,
-                              pressed && styles.pressed,
-                            ]}
+                            style={({ pressed }) => [styles.reviewDeleteBtn, pressed && styles.pressed]}
                           >
-                            <Text style={styles.reviewDeleteText}>
-                              {tt.delete}
-                            </Text>
+                            <Text style={styles.reviewDeleteText}>{tt.delete}</Text>
                           </Pressable>
                         ) : null}
                       </View>
@@ -1219,20 +1518,14 @@ export default function LotDetailsScreen() {
             <View style={styles.pinButtonsRow}>
               <Pressable
                 onPress={cancelPin}
-                style={({ pressed }) => [
-                  styles.pinCancelBtn,
-                  pressed && styles.pressed,
-                ]}
+                style={({ pressed }) => [styles.pinCancelBtn, pressed && styles.pressed]}
               >
                 <Text style={styles.pinCancelText}>{tt.cancel}</Text>
               </Pressable>
 
               <Pressable
                 onPress={confirmPin}
-                style={({ pressed }) => [
-                  styles.pinConfirmBtn,
-                  pressed && styles.pressed,
-                ]}
+                style={({ pressed }) => [styles.pinConfirmBtn, pressed && styles.pressed]}
               >
                 <Text style={styles.pinConfirmText}>{tt.confirm}</Text>
               </Pressable>
@@ -1293,6 +1586,7 @@ const makeStyles = (c: ThemeColors) =>
       paddingVertical: 10,
       paddingHorizontal: 14,
       borderRadius: 999,
+      ...(Platform.OS === "web" ? ({ cursor: "pointer" } as any) : null),
     },
     backBtnText: { color: c.text, fontWeight: "900", letterSpacing: 0.6 },
 
@@ -1365,6 +1659,70 @@ const makeStyles = (c: ThemeColors) =>
       fontSize: 12,
     },
 
+    /* ✅ STATUS */
+    statusBox: {
+      marginTop: 14,
+      borderWidth: 1,
+      borderColor: c.border,
+      backgroundColor: c.segmentBg,
+      borderRadius: 16,
+      padding: 12,
+      gap: 8,
+    },
+    statusTopRow: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      alignItems: "center",
+      gap: 10,
+      flexWrap: "wrap",
+    },
+    statusPill: {
+      borderRadius: 999,
+      paddingVertical: 6,
+      paddingHorizontal: 10,
+      borderWidth: 1,
+      alignSelf: "flex-start",
+    },
+    statusPillInner: { flexDirection: "row", alignItems: "center", gap: 8 },
+    statusDot: { width: 10, height: 10, borderRadius: 999, backgroundColor: "#999" },
+    dotVerified: { backgroundColor: "#22c55e" },
+    dotNotVerified: { backgroundColor: "#f59e0b" },
+    dotTampered: { backgroundColor: "#ef4444" },
+    statusPillText: {
+      fontWeight: "900",
+      letterSpacing: 0.6,
+      fontSize: 12,
+      color: "white",
+    },
+    statusVerified: { backgroundColor: "#16a34a", borderColor: "#16a34a" },
+    statusNotVerified: { backgroundColor: "#6b7280", borderColor: "#6b7280" },
+    statusTampered: { backgroundColor: "#dc2626", borderColor: "#dc2626" },
+    tamperedHint: {
+      color: "#dc2626",
+      fontWeight: "900",
+      letterSpacing: 0.2,
+      lineHeight: 18,
+    },
+
+    /* ✅ TIMELINE */
+    timelineBox: {
+      marginTop: 12,
+      borderWidth: 1,
+      borderColor: c.border,
+      backgroundColor: c.segmentBg,
+      borderRadius: 16,
+      padding: 12,
+      gap: 8,
+    },
+    timelineRow: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      alignItems: "center",
+      gap: 10,
+    },
+    timelineLabel: { color: c.text, fontWeight: "900", letterSpacing: 0.2 },
+    timelineValue: { color: c.muted, fontWeight: "900", letterSpacing: 0.2 },
+
     qrBox: {
       marginTop: 14,
       borderWidth: 1,
@@ -1416,20 +1774,66 @@ const makeStyles = (c: ThemeColors) =>
       letterSpacing: 0.2,
     },
 
+    photosSection: {
+      marginTop: 14,
+      borderWidth: 1,
+      borderColor: c.border,
+      backgroundColor: c.segmentBg,
+      borderRadius: 16,
+      padding: 12,
+    },
+    photosHeaderRow: { flexDirection: "row", alignItems: "flex-start", gap: 12 },
+    photoActionBtn: {
+      borderWidth: 1,
+      borderColor: c.border,
+      backgroundColor: c.card,
+      paddingVertical: 10,
+      paddingHorizontal: 12,
+      borderRadius: 999,
+      ...(Platform.OS === "web" ? ({ cursor: "pointer" } as any) : null),
+    },
+    photoActionBtnText: {
+      color: c.text,
+      fontWeight: "900",
+      letterSpacing: 0.4,
+      fontSize: 12,
+    },
+    emptyPhotos: {
+      marginTop: 10,
+      color: c.muted,
+      fontWeight: "800",
+      letterSpacing: 0.2,
+    },
+
     photosRow: {
       marginTop: 12,
       flexDirection: "row",
       gap: 10,
       flexWrap: "wrap",
     },
-    photoWrap: {
+    photoCard: {
+      width: 150,
       borderRadius: 12,
       overflow: "hidden",
       borderWidth: 1,
       borderColor: c.border,
-      backgroundColor: c.segmentBg,
+      backgroundColor: c.card,
     },
-    photo: { width: 150, height: 150, resizeMode: "cover" },
+    photo: { width: "100%", height: 150, resizeMode: "cover" },
+    photoRemoveBtn: {
+      borderTopWidth: 1,
+      borderTopColor: c.border,
+      backgroundColor: c.segmentBg,
+      paddingVertical: 8,
+      alignItems: "center",
+      ...(Platform.OS === "web" ? ({ cursor: "pointer" } as any) : null),
+    },
+    photoRemoveBtnText: {
+      color: c.text,
+      fontWeight: "900",
+      letterSpacing: 0.3,
+      fontSize: 12,
+    },
 
     ratingBox: {
       marginTop: 14,
@@ -1596,7 +2000,6 @@ const makeStyles = (c: ThemeColors) =>
       fontSize: 12,
     },
 
-    // ✅ NEW: certificate button style
     certificateBtn: {
       backgroundColor: c.green,
       borderColor: c.green,
