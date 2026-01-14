@@ -5,34 +5,50 @@ import "react-native-url-polyfill/auto";
 import { createClient } from "@supabase/supabase-js";
 import Constants from "expo-constants";
 
+/**
+ * We support BOTH:
+ * 1) EXPO_PUBLIC_* env vars (preferred, secure, from .env.local)
+ * 2) expo.extra fallback (for older builds / safety)
+ */
+
 type ExtraConfig = {
   supabaseUrl?: string;
   supabaseAnonKey?: string;
 };
 
 function getExtra(): ExtraConfig {
-  // Expo config can be exposed differently depending on Expo Go / Dev Client / EAS builds
   const extra =
     (Constants.expoConfig as any)?.extra ??
     (Constants as any)?.manifest?.extra ??
     (Constants as any)?.manifest2?.extra ??
     {};
-
   return extra as ExtraConfig;
 }
 
 const extra = getExtra();
 
-const supabaseUrl = String(extra?.supabaseUrl ?? "").trim();
-const supabaseAnonKey = String(extra?.supabaseAnonKey ?? "").trim();
+// 🔐 Preferred: ENV (from .env.local)
+const envSupabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
+const envSupabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+
+// 🛟 Fallback: expo.extra (in case env is missing)
+const supabaseUrl = String(
+  envSupabaseUrl ?? extra?.supabaseUrl ?? ""
+).trim();
+
+const supabaseAnonKey = String(
+  envSupabaseAnonKey ?? extra?.supabaseAnonKey ?? ""
+).trim();
 
 if (!supabaseUrl || !supabaseAnonKey) {
   const msg =
-    "[Supabase] Missing supabaseUrl or supabaseAnonKey in app.json -> expo.extra";
+    "[Supabase] Missing Supabase config. Expected EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY";
 
-  // Fail fast in dev to avoid silent bugs. In production, keep as console.warn.
   if (__DEV__) {
-    console.error(msg, { supabaseUrl: !!supabaseUrl, supabaseAnonKey: !!supabaseAnonKey });
+    console.error(msg, {
+      hasUrl: !!supabaseUrl,
+      hasAnonKey: !!supabaseAnonKey,
+    });
     throw new Error(msg);
   } else {
     console.warn(msg);
