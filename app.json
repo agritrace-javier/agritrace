@@ -8,11 +8,9 @@
     "scheme": "agritrace",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
-
     "extra": {
       "publicBaseUrl": "https://unattempted-ricky-cloudily.ngrok-free.dev"
     },
-
     "ios": {
       "supportsTablet": true
     },
@@ -43,7 +41,9 @@
             "backgroundColor": "#000000"
           }
         }
-      ]
+      ],
+      "expo-font",
+      "expo-web-browser"
     ],
     "experiments": {
       "typedRoutes": true,
