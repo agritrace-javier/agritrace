@@ -1,6 +1,7 @@
 // app/index.tsx
+import type { Session } from "@supabase/supabase-js";
 import { useRouter } from "expo-router";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Image,
@@ -13,9 +14,15 @@ import {
   View,
 } from "react-native";
 import { useLots } from "./lots-store";
+import { supabase } from "./supabase";
 import { getTheme, ThemeName } from "./theme";
 
 const LOGO_MARK = require("../assets/logo-mark.png");
+
+type ProfileMini = {
+  first_name: string | null;
+  last_name: string | null;
+};
 
 export default function HomeScreen() {
   const router = useRouter();
@@ -35,6 +42,142 @@ export default function HomeScreen() {
 
   const [showPin, setShowPin] = useState(false);
   const [pin, setPin] = useState("");
+
+  // ✅ AUTH STATE (stable)
+  const [session, setSession] = useState<Session | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+
+  // ✅ PROFILE DISPLAY (optional, non-blocking)
+  const [profile, setProfile] = useState<ProfileMini | null>(null);
+  const [profileReady, setProfileReady] = useState(false);
+
+  // Prevent double-setting logs & avoid state updates after unmount
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+
+    // ✅ Watchdog: if getSession hangs, don't freeze UI
+    const watchdog = setTimeout(() => {
+      if (!mountedRef.current) return;
+      if (!authReady) {
+        console.warn("[auth] getSession timeout -> forcing authReady=true");
+        setAuthReady(true);
+      }
+    }, 2000);
+
+    (async () => {
+      try {
+        console.log("[auth] getSession() start");
+        const { data, error } = await supabase.auth.getSession();
+        if (!mountedRef.current) return;
+
+        if (error) {
+          console.warn("[auth] getSession error:", error.message);
+          setSession(null);
+        } else {
+          console.log("[auth] getSession OK:", !!data.session);
+          setSession(data.session ?? null);
+        }
+      } catch (e: any) {
+        if (!mountedRef.current) return;
+        console.warn("[auth] getSession threw:", e?.message ?? String(e));
+        setSession(null);
+      } finally {
+        if (!mountedRef.current) return;
+        setAuthReady(true);
+        clearTimeout(watchdog);
+      }
+    })();
+
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => {
+      if (!mountedRef.current) return;
+      console.log("[auth] onAuthStateChange:", _event, "session?", !!s);
+      setSession(s);
+      setAuthReady(true);
+    });
+
+    return () => {
+      mountedRef.current = false;
+      clearTimeout(watchdog);
+      sub.subscription.unsubscribe();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const isAuthed = !!session?.user?.id;
+  const userEmail = session?.user?.email ?? "";
+  const userId = session?.user?.id ?? null;
+
+  // ✅ Non-blocking profile fetch (only for display name)
+  useEffect(() => {
+    let cancelled = false;
+
+    const fetchProfile = async (uid: string) => {
+      setProfileReady(false);
+
+      const WATCHDOG_MS = 2000;
+
+      try {
+        const result = await Promise.race<
+          { data: ProfileMini | null; error: any } | null
+        >([
+          supabase
+            .from("profiles")
+            .select("first_name,last_name")
+            .eq("id", uid)
+            .maybeSingle()
+            .then((r) => ({ data: (r.data as any) ?? null, error: r.error })),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), WATCHDOG_MS)),
+        ]);
+
+        if (cancelled) return;
+
+        if (!result) {
+          // timeout: don't block UI
+          setProfile(null);
+          setProfileReady(true);
+          return;
+        }
+
+        if (result.error) {
+          console.warn("[profile] fetch error:", result.error.message ?? result.error);
+          setProfile(null);
+          setProfileReady(true);
+          return;
+        }
+
+        setProfile(result.data ?? null);
+        setProfileReady(true);
+      } catch (e: any) {
+        if (cancelled) return;
+        console.warn("[profile] fetch threw:", e?.message ?? String(e));
+        setProfile(null);
+        setProfileReady(true);
+      }
+    };
+
+    if (!authReady) return;
+
+    if (!isAuthed || !userId) {
+      setProfile(null);
+      setProfileReady(true);
+      return;
+    }
+
+    fetchProfile(userId);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authReady, isAuthed, userId]);
+
+  const displayName = useMemo(() => {
+    const f = (profile?.first_name ?? "").trim();
+    const l = (profile?.last_name ?? "").trim();
+    const name = `${f} ${l}`.trim();
+    return name || "";
+  }, [profile]);
 
   const t = useMemo(() => {
     const dict = {
@@ -63,6 +206,24 @@ export default function HomeScreen() {
         tryAgain: "Try again.",
         tipWeb: "Responsive layout — resize the browser window.",
         tipMobile: "Optimized for mobile and web.",
+
+        authTitle: "Account",
+        login: "Log in",
+        signup: "Sign up",
+        authHint: "Create an account to save lots and manage your profile.",
+        signedInAs: "Signed in as",
+        logout: "Log out",
+        logoutErr: "Logout error",
+        loadingAuth: "Loading session…",
+
+        createLot: "Create Lot",
+        createLotHint: "Create and save your own lots (requires login).",
+        profile: "Profile",
+        needLoginTitle: "Login required",
+        needLoginBody: "Please log in to continue.",
+        retry: "Retry",
+
+        homeName: "Welcome",
       },
       es: {
         title: "AgriTrace",
@@ -89,6 +250,24 @@ export default function HomeScreen() {
         tryAgain: "Intenta otra vez.",
         tipWeb: "Diseño responsive — cambia el tamaño del navegador.",
         tipMobile: "Optimizado para móvil y web.",
+
+        authTitle: "Cuenta",
+        login: "Iniciar sesión",
+        signup: "Crear cuenta",
+        authHint: "Crea una cuenta para guardar lotes y administrar tu perfil.",
+        signedInAs: "Sesión activa",
+        logout: "Cerrar sesión",
+        logoutErr: "Error al cerrar sesión",
+        loadingAuth: "Cargando sesión…",
+
+        createLot: "Crear Lote",
+        createLotHint: "Crea y guarda tus propios lotes (requiere sesión).",
+        profile: "Perfil",
+        needLoginTitle: "Necesitas iniciar sesión",
+        needLoginBody: "Por favor inicia sesión para continuar.",
+        retry: "Reintentar",
+
+        homeName: "Bienvenido",
       },
     } as const;
 
@@ -113,6 +292,31 @@ export default function HomeScreen() {
     setShowPin(false);
   };
 
+  async function onLogout() {
+    try {
+      const { error } = await supabase.auth.signOut();
+      if (error) throw error;
+    } catch (err: any) {
+      Alert.alert(t.logoutErr, err?.message ?? "Unknown error");
+    }
+  }
+
+  function requireLoginThen(path: "/create-lot" | "/profile") {
+    if (!authReady) {
+      Alert.alert("AgriTrace", t.loadingAuth);
+      return;
+    }
+    if (!isAuthed) {
+      Alert.alert(t.needLoginTitle, t.needLoginBody);
+      router.push("/login");
+      return;
+    }
+    router.push(path);
+  }
+
+  // ✅ If auth is stuck even after watchdog, let user proceed
+  const showLoading = !authReady;
+
   return (
     <View style={styles.page}>
       <ScrollView
@@ -121,14 +325,12 @@ export default function HomeScreen() {
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
-        {/* HERO */}
         <View style={styles.hero}>
           <Image source={LOGO_MARK} style={styles.heroLogo} resizeMode="contain" />
 
           <Text style={styles.heroTitle}>{t.title}</Text>
           <Text style={styles.heroSubtitle}>{t.subtitle}</Text>
 
-          {/* Mode badge + action */}
           <View style={styles.modeRow}>
             <Text style={styles.modeBadge}>
               {t.modeLabel}: {mode === "operator" ? t.operator : t.client}
@@ -157,9 +359,128 @@ export default function HomeScreen() {
             )}
           </View>
 
+          {/* ACCOUNT CARD */}
+          <View style={styles.authCard}>
+            <Text style={styles.authTitle}>{t.authTitle}</Text>
+
+            {showLoading ? (
+              <>
+                <Text style={styles.authHint}>{t.loadingAuth}</Text>
+
+                {/* emergency buttons so you are never stuck */}
+                <View style={styles.authedQuickRow}>
+                  <Pressable
+                    style={({ pressed }) => [
+                      styles.authedSecondaryBtn,
+                      pressed && styles.primaryBtnPressed,
+                    ]}
+                    onPress={() => {
+                      setAuthReady(true);
+                    }}
+                  >
+                    <Text style={styles.authedSecondaryBtnText}>{t.retry}</Text>
+                  </Pressable>
+
+                  <Pressable
+                    style={({ pressed }) => [
+                      styles.authedPrimaryBtn,
+                      pressed && styles.primaryBtnPressed,
+                    ]}
+                    onPress={() => router.push("/login")}
+                  >
+                    <Text style={styles.authedPrimaryBtnText}>{t.login}</Text>
+                  </Pressable>
+                </View>
+              </>
+            ) : isAuthed ? (
+              <>
+                <Text style={styles.signedInText}>
+                  {t.signedInAs}:{" "}
+                  <Text style={styles.signedInEmail}>
+                    {displayName
+                      ? displayName
+                      : userEmail || "(no email)"}
+                  </Text>
+                </Text>
+
+                {/* tiny helper line (optional) */}
+                <Text style={styles.authHint}>
+                  {profileReady
+                    ? displayName
+                      ? ""
+                      : userEmail
+                        ? userEmail
+                        : ""
+                    : lang === "es"
+                      ? "Cargando nombre…"
+                      : "Loading name…"}
+                </Text>
+
+                <View style={styles.authedQuickRow}>
+                  <Pressable
+                    style={({ pressed }) => [
+                      styles.authedPrimaryBtn,
+                      pressed && styles.primaryBtnPressed,
+                    ]}
+                    onPress={() => requireLoginThen("/create-lot")}
+                  >
+                    <Text style={styles.authedPrimaryBtnText}>{t.createLot}</Text>
+                  </Pressable>
+
+                  <Pressable
+                    style={({ pressed }) => [
+                      styles.authedSecondaryBtn,
+                      pressed && styles.primaryBtnPressed,
+                    ]}
+                    onPress={() => requireLoginThen("/profile")}
+                  >
+                    <Text style={styles.authedSecondaryBtnText}>{t.profile}</Text>
+                  </Pressable>
+                </View>
+
+                <Text style={styles.authHint}>{t.createLotHint}</Text>
+
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.authDangerBtn,
+                    pressed && styles.primaryBtnPressed,
+                  ]}
+                  onPress={onLogout}
+                >
+                  <Text style={styles.authDangerBtnText}>{t.logout}</Text>
+                </Pressable>
+              </>
+            ) : (
+              <>
+                <View style={styles.authButtonsRow}>
+                  <Pressable
+                    style={({ pressed }) => [
+                      styles.authSecondaryBtn,
+                      pressed && styles.primaryBtnPressed,
+                    ]}
+                    onPress={() => router.push("/login")}
+                  >
+                    <Text style={styles.authSecondaryBtnText}>{t.login}</Text>
+                  </Pressable>
+
+                  <Pressable
+                    style={({ pressed }) => [
+                      styles.authPrimaryBtn,
+                      pressed && styles.primaryBtnPressed,
+                    ]}
+                    onPress={() => router.push("/signup")}
+                  >
+                    <Text style={styles.authPrimaryBtnText}>{t.signup}</Text>
+                  </Pressable>
+                </View>
+
+                <Text style={styles.authHint}>{t.authHint}</Text>
+              </>
+            )}
+          </View>
+
           {/* PRIMARY ACTIONS */}
           <View style={styles.heroActions}>
-            {/* ✅ Scan QR (consumer flow) */}
             <Pressable
               style={({ pressed }) => [
                 styles.heroPrimaryBtn,
@@ -173,7 +494,6 @@ export default function HomeScreen() {
 
             <Text style={styles.actionHint}>{t.scanHint}</Text>
 
-            {/* Catalog */}
             <Pressable
               style={({ pressed }) => [
                 styles.heroSecondaryBtn,
@@ -185,7 +505,6 @@ export default function HomeScreen() {
               <Text style={styles.heroSecondaryBtnArrow}>→</Text>
             </Pressable>
 
-            {/* ABOUT US */}
             <Pressable
               style={({ pressed }) => [
                 styles.heroTertiaryBtn,
@@ -387,6 +706,155 @@ const makeStyles = (c: ReturnType<typeof getTheme>["colors"]) =>
       fontWeight: "900",
       letterSpacing: 0.6,
       fontSize: 12,
+    },
+
+    authCard: {
+      width: "100%",
+      maxWidth: 520,
+      marginTop: 14,
+      backgroundColor: c.card,
+      borderRadius: 18,
+      padding: 14,
+      borderWidth: 1,
+      borderColor: c.border,
+    },
+    authTitle: {
+      fontSize: 12,
+      fontWeight: "900",
+      color: c.muted,
+      textTransform: "uppercase",
+      letterSpacing: 1.6,
+      marginBottom: 10,
+      textAlign: "center",
+    },
+    authButtonsRow: {
+      flexDirection: "row",
+      gap: 10,
+      justifyContent: "center",
+      flexWrap: "wrap",
+    },
+    authPrimaryBtn: {
+      backgroundColor: c.green,
+      borderRadius: 999,
+      paddingVertical: 12,
+      paddingHorizontal: 18,
+      borderWidth: 1,
+      borderColor: c.green,
+      minWidth: 160,
+      alignItems: "center",
+      justifyContent: "center",
+      ...(Platform.OS === "web" ? ({ cursor: "pointer" } as any) : null),
+    },
+    authPrimaryBtnText: {
+      color: "white",
+      fontSize: 14,
+      fontWeight: "900",
+      letterSpacing: 1,
+      textAlign: "center",
+    },
+    authSecondaryBtn: {
+      backgroundColor: c.segmentBg,
+      borderRadius: 999,
+      paddingVertical: 12,
+      paddingHorizontal: 18,
+      borderWidth: 1,
+      borderColor: c.border,
+      minWidth: 160,
+      alignItems: "center",
+      justifyContent: "center",
+      ...(Platform.OS === "web" ? ({ cursor: "pointer" } as any) : null),
+    },
+    authSecondaryBtnText: {
+      color: c.text,
+      fontSize: 14,
+      fontWeight: "900",
+      letterSpacing: 1,
+      textAlign: "center",
+    },
+    authHint: {
+      marginTop: 10,
+      color: c.muted,
+      fontWeight: "800",
+      letterSpacing: 0.3,
+      fontSize: 12,
+      textAlign: "center",
+    },
+
+    signedInText: {
+      color: c.muted,
+      fontWeight: "800",
+      fontSize: 12,
+      letterSpacing: 0.2,
+      textAlign: "center",
+      marginBottom: 6,
+    },
+    signedInEmail: { color: c.text, fontWeight: "900" },
+
+    authedQuickRow: {
+      flexDirection: "row",
+      gap: 10,
+      justifyContent: "center",
+      flexWrap: "wrap",
+      marginBottom: 6,
+    },
+    authedPrimaryBtn: {
+      backgroundColor: c.green,
+      borderRadius: 999,
+      paddingVertical: 12,
+      paddingHorizontal: 16,
+      borderWidth: 1,
+      borderColor: c.green,
+      minWidth: 160,
+      alignItems: "center",
+      justifyContent: "center",
+      ...(Platform.OS === "web" ? ({ cursor: "pointer" } as any) : null),
+    },
+    authedPrimaryBtnText: {
+      color: "white",
+      fontSize: 14,
+      fontWeight: "900",
+      letterSpacing: 1,
+      textAlign: "center",
+    },
+    authedSecondaryBtn: {
+      backgroundColor: c.segmentBg,
+      borderRadius: 999,
+      paddingVertical: 12,
+      paddingHorizontal: 16,
+      borderWidth: 1,
+      borderColor: c.border,
+      minWidth: 160,
+      alignItems: "center",
+      justifyContent: "center",
+      ...(Platform.OS === "web" ? ({ cursor: "pointer" } as any) : null),
+    },
+    authedSecondaryBtnText: {
+      color: c.text,
+      fontSize: 14,
+      fontWeight: "900",
+      letterSpacing: 1,
+      textAlign: "center",
+    },
+
+    authDangerBtn: {
+      backgroundColor: c.segmentBg,
+      borderRadius: 999,
+      paddingVertical: 12,
+      paddingHorizontal: 18,
+      borderWidth: 1,
+      borderColor: c.border,
+      minWidth: 240,
+      alignSelf: "center",
+      alignItems: "center",
+      justifyContent: "center",
+      ...(Platform.OS === "web" ? ({ cursor: "pointer" } as any) : null),
+    },
+    authDangerBtnText: {
+      color: c.text,
+      fontSize: 14,
+      fontWeight: "900",
+      letterSpacing: 1,
+      textAlign: "center",
     },
 
     heroActions: { width: "100%", alignItems: "center", marginTop: 10 },

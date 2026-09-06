@@ -1,21 +1,23 @@
 // app/create-lot.tsx
+import type { Session } from "@supabase/supabase-js";
 import * as ImagePicker from "expo-image-picker";
 import { useRouter } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
 import {
-    Alert,
-    Image,
-    KeyboardAvoidingView,
-    Platform,
-    Pressable,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    View,
+  Alert,
+  Image,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
 } from "react-native";
 import { t as I18N } from "./i18n";
 import { useLots } from "./lots-store";
+import { supabase } from "./supabase";
 import { getTheme } from "./theme";
 
 function isValidDateYYYYMMDD(s: string) {
@@ -36,7 +38,6 @@ function makeLotId() {
  * Convert a blob/object URL (or normal URL) to data URL so it persists after refresh.
  */
 async function webUriToDataUrl(uri: string): Promise<string> {
-  // If already data URL, keep it.
   if (uri.startsWith("data:")) return uri;
 
   const res = await fetch(uri);
@@ -55,26 +56,42 @@ async function webUriToDataUrl(uri: string): Promise<string> {
 export default function CreateLotScreen() {
   const router = useRouter();
 
-  const { addLot, getLotById, lang, mode, themeName } = useLots();
+  const { saveLot, getLotById, lang, themeName } = useLots();
   const tt = I18N[lang];
 
   const theme = useMemo(() => getTheme(themeName), [themeName]);
   const c = theme.colors;
   const styles = useMemo(() => makeStyles(c), [c]);
 
+  // ✅ ALL hooks must be declared BEFORE any conditional return
+  const [session, setSession] = useState<Session | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+
+  const [productEn, setProductEn] = useState("");
+  const [productEs, setProductEs] = useState("");
+  const [origin, setOrigin] = useState("");
+  const [harvestDate, setHarvestDate] = useState("");
+  const [batch, setBatch] = useState("");
+  const [notes, setNotes] = useState("");
+
+  const [photoUris, setPhotoUris] = useState<string[]>([]);
+  const [busyPhotos, setBusyPhotos] = useState(false);
+  const [busySave, setBusySave] = useState(false);
+
+  const isAuthed = !!session?.user?.id;
+
   const ui = useMemo(() => {
     if (lang === "es") {
       return {
         photosTitle: "Fotos del producto",
-        photosSub:
-          "Sube fotos del producto para que el cliente vea evidencia del lote.",
+        photosSub: "Sube fotos del producto para que el cliente vea evidencia del lote.",
         upload: "Subir fotos",
         remove: "Quitar",
         max5: "Máximo 5 fotos (demo).",
-        permDenied:
-          "Permiso denegado. Activa acceso a Fotos en Settings y vuelve a intentar.",
+        permDenied: "Permiso denegado. Activa acceso a Fotos en Settings y vuelve a intentar.",
         pickFailed: "No se pudieron seleccionar fotos.",
-        notOperator: "Solo el Operador puede crear lotes.",
+        needLoginTitle: "Necesitas iniciar sesión",
+        needLoginBody: "Inicia sesión para crear y guardar lotes.",
         ok: "OK",
         productEnLabel: "Producto (EN)",
         productEsLabel: "Producto (ES)",
@@ -84,6 +101,11 @@ export default function CreateLotScreen() {
         batchHint: "ej. BATCH-A1",
         dateHint: "YYYY-MM-DD",
         converting: "Procesando fotos…",
+        loadingSession: "Cargando sesión…",
+        saving: "Guardando…",
+        savedTitle: "Guardado",
+        savedBody: "Lote creado:",
+        saveErrTitle: "No se pudo guardar",
       };
     }
     return {
@@ -92,10 +114,10 @@ export default function CreateLotScreen() {
       upload: "Upload photos",
       remove: "Remove",
       max5: "Max 5 photos (demo).",
-      permDenied:
-        "Permission denied. Enable Photos access in Settings and try again.",
+      permDenied: "Permission denied. Enable Photos access in Settings and try again.",
       pickFailed: "Could not pick photos.",
-      notOperator: "Only Operator can create lots.",
+      needLoginTitle: "Login required",
+      needLoginBody: "Please log in to create and save lots.",
       ok: "OK",
       productEnLabel: "Product (EN)",
       productEsLabel: "Product (ES)",
@@ -105,34 +127,50 @@ export default function CreateLotScreen() {
       batchHint: "e.g. BATCH-A1",
       dateHint: "YYYY-MM-DD",
       converting: "Processing photos…",
+      loadingSession: "Loading session…",
+      saving: "Saving…",
+      savedTitle: "Saved",
+      savedBody: "Lot created:",
+      saveErrTitle: "Could not save",
     };
   }, [lang]);
 
-  // ✅ Gate: SOLO OPERATOR
+  // ✅ Load session once + keep in sync
   useEffect(() => {
-    if (mode !== "operator") {
-      if (Platform.OS !== "web") {
-        Alert.alert("AgriTrace", ui.notOperator, [{ text: ui.ok }]);
+    let mounted = true;
+
+    (async () => {
+      try {
+        const { data } = await supabase.auth.getSession();
+        if (!mounted) return;
+        setSession(data.session ?? null);
+      } finally {
+        if (mounted) setAuthReady(true);
       }
-      router.replace("/catalog");
+    })();
+
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => {
+      setSession(s);
+      setAuthReady(true);
+    });
+
+    return () => {
+      mounted = false;
+      sub.subscription.unsubscribe();
+    };
+  }, []);
+
+  // ✅ Redirect only after we know auth state
+  useEffect(() => {
+    if (!authReady) return;
+    if (!isAuthed) {
+      if (Platform.OS !== "web") {
+        Alert.alert("AgriTrace", ui.needLoginBody, [{ text: ui.ok }]);
+      }
+      router.replace("/login");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, router]);
-
-  if (mode !== "operator") {
-    return <View style={styles.page} />;
-  }
-
-  const [productEn, setProductEn] = useState("");
-  const [productEs, setProductEs] = useState("");
-  const [origin, setOrigin] = useState("");
-  const [harvestDate, setHarvestDate] = useState("");
-  const [batch, setBatch] = useState("");
-  const [notes, setNotes] = useState("");
-
-  // ✅ Photos (user-uploaded)
-  const [photoUris, setPhotoUris] = useState<string[]>([]);
-  const [busyPhotos, setBusyPhotos] = useState(false);
+  }, [authReady, isAuthed, router]);
 
   const handleBack = () => {
     router.replace("/catalog");
@@ -185,7 +223,6 @@ export default function CreateLotScreen() {
 
           setPhotoUris((prev) => {
             const next = [...prev, ...converted];
-            // hard cap (demo)
             return next.slice(0, 5);
           });
         } finally {
@@ -194,7 +231,7 @@ export default function CreateLotScreen() {
         return;
       }
 
-      // ✅ Native: keep file uri (works persisted in AsyncStorage lots)
+      // ✅ Native: keep file uri
       setPhotoUris((prev) => {
         const next = [...prev, ...picked];
         return next.slice(0, 5);
@@ -217,8 +254,14 @@ export default function CreateLotScreen() {
     return `LOT-${Date.now().toString(36).toUpperCase()}`;
   };
 
-  const onSave = () => {
-    if (busyPhotos) return;
+  const onSave = async () => {
+    if (busyPhotos || busySave) return;
+
+    if (!isAuthed) {
+      Alert.alert("AgriTrace", ui.needLoginBody, [{ text: ui.ok }]);
+      router.replace("/login");
+      return;
+    }
 
     const pe = normalizeText(productEn);
     const ps = normalizeText(productEs);
@@ -242,27 +285,52 @@ export default function CreateLotScreen() {
 
     const id = buildUniqueLotId();
 
-    addLot({
-      id,
-      product_en: finalEn,
-      product_es: finalEs,
-      origin: o,
-      harvestDate: h,
-      batch: b,
-      notes: n || undefined,
-      photos: photoUris.slice(0, 5),
-      createdAt: Date.now(),
-    } as any);
+    setBusySave(true);
+    try {
+      const result = await saveLot({
+        id,
+        product_en: finalEn,
+        product_es: finalEs,
+        origin: o,
+        harvestDate: h,
+        batch: b,
+        notes: n || undefined,
+        photos: photoUris.slice(0, 5),
+        createdAt: Date.now(),
+      } as any);
 
-    if (Platform.OS === "web") {
-      // @ts-ignore
-      globalThis?.alert?.(`${tt.saved}: ${id}`);
-    } else {
-      Alert.alert(tt.saved, `${tt.lotCreated} ${id}`);
+      if (!result.ok) {
+        Alert.alert(ui.saveErrTitle, result.error);
+        return;
+      }
+
+      // ✅ Only show saved if Supabase confirmed
+      if (Platform.OS === "web") {
+        // @ts-ignore
+        globalThis?.alert?.(`${ui.savedTitle}: ${result.lot.id}`);
+      } else {
+        Alert.alert(ui.savedTitle, `${ui.savedBody} ${result.lot.id}`);
+      }
+
+      router.replace("/catalog");
+    } finally {
+      setBusySave(false);
     }
-
-    router.replace("/catalog");
   };
+
+  // ✅ Render states (no early return before hooks)
+  if (!authReady) {
+    return (
+      <View style={[styles.page, { alignItems: "center", justifyContent: "center" }]}>
+        <Text style={{ color: c.muted, fontWeight: "800" }}>{ui.loadingSession}</Text>
+      </View>
+    );
+  }
+
+  if (!isAuthed) {
+    // redirect is handled by effect; keep screen blank to avoid flicker
+    return <View style={styles.page} />;
+  }
 
   return (
     <KeyboardAvoidingView
@@ -356,9 +424,9 @@ export default function CreateLotScreen() {
               style={({ pressed }) => [
                 styles.photoBtn,
                 pressed && styles.pressed,
-                (photoUris.length >= 5 || busyPhotos) && styles.disabled,
+                (photoUris.length >= 5 || busyPhotos || busySave) && styles.disabled,
               ]}
-              disabled={photoUris.length >= 5 || busyPhotos}
+              disabled={photoUris.length >= 5 || busyPhotos || busySave}
             >
               <Text style={styles.photoBtnText}>
                 {busyPhotos ? ui.converting : ui.upload}
@@ -378,7 +446,9 @@ export default function CreateLotScreen() {
                     style={({ pressed }) => [
                       styles.removeBtn,
                       pressed && styles.pressed,
+                      busySave && styles.disabled,
                     ]}
+                    disabled={busySave}
                   >
                     <Text style={styles.removeBtnText}>{ui.remove}</Text>
                   </Pressable>
@@ -393,11 +463,13 @@ export default function CreateLotScreen() {
           style={({ pressed }) => [
             styles.saveBtn,
             pressed && styles.pressed,
-            busyPhotos && styles.disabled,
+            (busyPhotos || busySave) && styles.disabled,
           ]}
-          disabled={busyPhotos}
+          disabled={busyPhotos || busySave}
         >
-          <Text style={styles.saveBtnText}>{tt.saveLot}</Text>
+          <Text style={styles.saveBtnText}>
+            {busySave ? ui.saving : tt.saveLot}
+          </Text>
         </Pressable>
       </ScrollView>
     </KeyboardAvoidingView>

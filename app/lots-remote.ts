@@ -58,8 +58,7 @@ function base64ToUint8Array(b64: string) {
   }
 
   try {
-    const BufferImpl =
-      (globalThis as any)?.Buffer ?? require("buffer")?.Buffer ?? null;
+    const BufferImpl = (globalThis as any)?.Buffer ?? require("buffer")?.Buffer ?? null;
     if (BufferImpl) {
       const buf = BufferImpl.from(b64, "base64");
       return new Uint8Array(buf);
@@ -84,7 +83,6 @@ function toMs(v: any): number {
 
 function normalizeInsertError(e: any) {
   const msg = String(e?.message ?? e ?? "");
-  // Helpful RLS hint
   if (/row-level security|violates row-level security/i.test(msg)) {
     return new Error(
       "Supabase RLS is blocking inserts/updates on 'lots'. You must add an INSERT/UPDATE/DELETE policy for anon or disable RLS for MVP."
@@ -100,25 +98,19 @@ function normalizeInsertError(e: any) {
 async function detectSchemaMode(): Promise<SchemaMode> {
   if (schemaModeCache) return schemaModeCache;
 
-  // Try camel first
-  const camelTry = await supabase
-    .from(TABLE)
-    .select("id, harvestDate, createdAt")
-    .limit(1);
+  const camelTry = await supabase.from(TABLE).select("id, harvestDate, createdAt").limit(1);
 
   if (!camelTry.error) {
     schemaModeCache = "camel";
     return "camel";
   }
 
-  // If camel fails due to missing columns, assume snake
   const msg = String(camelTry.error?.message ?? "");
   if (/column .*harvestDate|createdAt/i.test(msg) || /does not exist/i.test(msg)) {
     schemaModeCache = "snake";
     return "snake";
   }
 
-  // Otherwise still fallback to snake (more likely in Postgres naming)
   schemaModeCache = "snake";
   return "snake";
 }
@@ -134,9 +126,7 @@ function lotToRowCamel(lot: Lot) {
     notes: lot.notes ? String(lot.notes) : null,
     rating: typeof lot.rating === "number" ? lot.rating : null,
     createdAt: typeof lot.createdAt === "number" ? lot.createdAt : Date.now(),
-    photos: Array.isArray(lot.photos)
-      ? lot.photos.map((x) => s(x)).filter(Boolean).slice(0, 12)
-      : null,
+    photos: Array.isArray(lot.photos) ? lot.photos.map((x) => s(x)).filter(Boolean).slice(0, 12) : null,
   };
 }
 
@@ -151,14 +141,11 @@ function lotToRowSnake(lot: Lot) {
     notes: lot.notes ? String(lot.notes) : null,
     rating: typeof lot.rating === "number" ? lot.rating : null,
     created_at: typeof lot.createdAt === "number" ? lot.createdAt : Date.now(),
-    photos: Array.isArray(lot.photos)
-      ? lot.photos.map((x) => s(x)).filter(Boolean).slice(0, 12)
-      : null,
+    photos: Array.isArray(lot.photos) ? lot.photos.map((x) => s(x)).filter(Boolean).slice(0, 12) : null,
   };
 }
 
 function rowToLotAny(r: any): Lot {
-  // Support both schemas on read
   const harvest = s(r?.harvestDate ?? r?.harvest_date);
   const created = r?.createdAt ?? r?.created_at;
 
@@ -181,14 +168,9 @@ function rowToLotAny(r: any): Lot {
  * =========================== */
 export async function fetchLotsRemote(): Promise<Lot[]> {
   const mode = await detectSchemaMode();
-
   const orderCol = mode === "camel" ? "createdAt" : "created_at";
 
-  const { data, error } = await supabase
-    .from(TABLE)
-    .select("*")
-    .order(orderCol, { ascending: false });
-
+  const { data, error } = await supabase.from(TABLE).select("*").order(orderCol, { ascending: false });
   if (error) throw error;
 
   return (data ?? []).map(rowToLotAny);
@@ -198,10 +180,7 @@ export async function upsertLotRemote(lot: Lot): Promise<void> {
   const mode = await detectSchemaMode();
   const row = mode === "camel" ? lotToRowCamel(lot) : lotToRowSnake(lot);
 
-  const { error } = await supabase.from(TABLE).upsert(row as any, {
-    onConflict: "id",
-  });
-
+  const { error } = await supabase.from(TABLE).upsert(row as any, { onConflict: "id" });
   if (error) throw normalizeInsertError(error);
 }
 
@@ -236,9 +215,8 @@ async function uploadOnePhoto(lotId: string, uri: string, index: number) {
     bytes = new Uint8Array(ab);
     mime = res.headers.get("content-type") || ct;
   } else {
-    const b64 = await FileSystem.readAsStringAsync(uri, {
-      encoding: "base64" as any,
-    });
+    // Mobile (file://, content://, etc.) — may fail for some URI types
+    const b64 = await FileSystem.readAsStringAsync(uri, { encoding: "base64" as any });
     bytes = base64ToUint8Array(b64);
   }
 
@@ -256,15 +234,42 @@ async function uploadOnePhoto(lotId: string, uri: string, index: number) {
   return publicUrl;
 }
 
+/**
+ * ✅ IMPORTANT CHANGE:
+ * - Do NOT fail the whole upload if one photo fails.
+ * - Keep existing http(s) URLs.
+ * - Try upload for local URIs; if a URI fails, we skip it and continue.
+ */
 export async function uploadLotPhotosIfNeeded(lot: Lot): Promise<Lot> {
   const photos = Array.isArray(lot.photos) ? lot.photos : [];
   if (photos.length === 0) return lot;
 
-  const uploaded = await Promise.all(
-    photos.slice(0, 12).map((uri, idx) => uploadOnePhoto(lot.id, uri, idx))
-  );
+  const out: string[] = [];
 
-  const uniq = Array.from(new Set(uploaded.map((x) => s(x)).filter(Boolean)));
+  for (let idx = 0; idx < Math.min(12, photos.length); idx++) {
+    const uri = s(photos[idx]);
+    if (!uri) continue;
+
+    if (isHttpUrl(uri)) {
+      out.push(uri);
+      continue;
+    }
+
+    try {
+      const uploadedUrl = await uploadOnePhoto(lot.id, uri, idx);
+      if (uploadedUrl) out.push(uploadedUrl);
+    } catch (e: any) {
+      console.warn("[uploadOnePhoto] failed for", lot.id, "idx", idx, "uri", uri, "err", e?.message ?? e);
+      // Skip this photo so we can still save the lot with any successful uploads
+      continue;
+    }
+  }
+
+  const uniq = Array.from(new Set(out.map((x) => s(x)).filter(Boolean)));
+
+  // If nothing was uploaded/kept, return original lot unchanged
+  if (uniq.length === 0) return lot;
+
   return { ...lot, photos: uniq };
 }
 

@@ -32,13 +32,12 @@ const envSupabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
 const envSupabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
 
 // 🛟 Fallback: expo.extra (in case env is missing)
-const supabaseUrl = String(
-  envSupabaseUrl ?? extra?.supabaseUrl ?? ""
-).trim();
+const supabaseUrl = String(envSupabaseUrl ?? extra?.supabaseUrl ?? "").trim();
+const supabaseAnonKey = String(envSupabaseAnonKey ?? extra?.supabaseAnonKey ?? "").trim();
 
-const supabaseAnonKey = String(
-  envSupabaseAnonKey ?? extra?.supabaseAnonKey ?? ""
-).trim();
+// ✅ Export resolved config for debugging / health checks
+export const SUPABASE_URL = supabaseUrl;
+export const SUPABASE_ANON_KEY = supabaseAnonKey;
 
 if (!supabaseUrl || !supabaseAnonKey) {
   const msg =
@@ -57,8 +56,8 @@ if (!supabaseUrl || !supabaseAnonKey) {
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
-    persistSession: false, // MVP: no auth yet
-    autoRefreshToken: false,
+    persistSession: true,
+    autoRefreshToken: true,
     detectSessionInUrl: false,
   },
 });
