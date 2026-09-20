@@ -20,8 +20,8 @@ import {
   upsertLotRemote,
 } from "./lots-remote";
 
-// ✅ listen to auth changes and re-sync
-import { supabase } from "./supabase";
+// AuthProvider is the single owner of Supabase Auth/session lifecycle.
+import { useAuth } from "../src/features/auth";
 
 type Mode = "client" | "operator";
 
@@ -300,17 +300,11 @@ function cacheKey(base: string, userId: string | null) {
   return `${base}:${uid}`;
 }
 
-async function getCurrentUserId(): Promise<string | null> {
-  try {
-    const { data } = await supabase.auth.getSession();
-    const uid = data?.session?.user?.id;
-    return uid ? String(uid) : null;
-  } catch {
-    return null;
-  }
-}
 
 export function LotsProvider({ children }: { children: React.ReactNode }) {
+  const { user } = useAuth();
+  const authUserId = user?.id ? String(user.id) : null;
+
   const [lots, setLots] = useState<Lot[]>(initialLots);
   const [mode, setMode] = useState<Mode>("client");
   const [lang, setLang] = useState<Lang>("en");
@@ -483,59 +477,54 @@ export function LotsProvider({ children }: { children: React.ReactNode }) {
   }
 
   /** ===========================
-   * ✅ Init + realtime + auth change
+   * AuthProvider-driven user lifecycle
+   *
+   * AuthProvider owns Supabase Auth/session state.
+   * LotsProvider reacts to the current user and owns only
+   * user-scoped cache, remote lot sync, and realtime lots.
    * =========================== */
   useEffect(() => {
-    let mounted = true;
+    let cancelled = false;
+    const uid = authUserId;
+
+    // Set the ref immediately so any cache writes are scoped
+    // to the same user whose data is being loaded.
+    activeUserIdRef.current = uid;
+    setActiveUserId(uid);
 
     (async () => {
       try {
-        // prefs (global)
-        await loadPrefsOnce();
-
-        // determine initial user id
-        const uid = await getCurrentUserId();
-        if (!mounted) return;
-        setActiveUserId(uid);
-
-        // per-user cache
         const deletedSet = await loadUserScopedCache(uid);
-        if (!mounted) return;
+        if (cancelled) return;
 
-        // remote fetch (defensive)
         try {
-          await syncFromRemote(deletedSet, "init");
-          console.log("[Supabase fetchLotsRemote] OK");
+          await syncFromRemote(
+            deletedSet,
+            uid ? "auth-user-change" : "auth-anon"
+          );
+          if (cancelled) return;
+
+          console.log(
+            `[LotsProvider] user-scoped sync OK uid=${uid ?? "anon"}`
+          );
         } catch (e) {
-          console.warn("[Supabase fetchLotsRemote] failed:", errMsg(e));
+          if (!cancelled) {
+            console.warn("[Supabase fetchLotsRemote] failed:", errMsg(e));
+          }
+        }
+
+        if (!cancelled) {
+          startRealtime();
         }
       } catch (e) {
-        console.warn("[LotsProvider init] failed:", errMsg(e));
+        if (!cancelled) {
+          console.warn("[LotsProvider user lifecycle] failed:", errMsg(e));
+        }
       }
     })();
 
-    // start realtime once
-    startRealtime();
-
-    // on auth change: switch user cache, re-fetch, restart realtime
-    const { data: authSub } = supabase.auth.onAuthStateChange(async (event) => {
-      try {
-        const uid = await getCurrentUserId();
-        setActiveUserId(uid);
-
-        const deletedSet = await loadUserScopedCache(uid);
-
-        await syncFromRemote(deletedSet, `auth:${event}`);
-        console.log("[Supabase auth change] re-sync OK:", event);
-
-        startRealtime();
-      } catch (e) {
-        console.warn("[Supabase auth change] re-sync failed:", errMsg(e));
-      }
-    });
-
     return () => {
-      mounted = false;
+      cancelled = true;
 
       try {
         realtimeUnsubRef.current?.();
@@ -543,12 +532,21 @@ export function LotsProvider({ children }: { children: React.ReactNode }) {
         // ignore
       }
 
-      try {
-        authSub.subscription.unsubscribe();
-      } catch {
-        // ignore
-      }
+      realtimeUnsubRef.current = null;
     };
+  }, [authUserId]);
+
+  /**
+   * Global preferences are independent from authentication.
+   */
+  useEffect(() => {
+    (async () => {
+      try {
+        await loadPrefsOnce();
+      } catch (e) {
+        console.warn("[LotsProvider prefs] failed:", errMsg(e));
+      }
+    })();
   }, []);
 
   /**

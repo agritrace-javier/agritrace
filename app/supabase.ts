@@ -1,63 +1,22 @@
-// app/supabase.ts
-import "react-native-get-random-values";
-import "react-native-url-polyfill/auto";
-
-import { createClient } from "@supabase/supabase-js";
-import Constants from "expo-constants";
-
 /**
- * We support BOTH:
- * 1) EXPO_PUBLIC_* env vars (preferred, secure, from .env.local)
- * 2) expo.extra fallback (for older builds / safety)
+ * AgriTrace Supabase compatibility bridge.
+ *
+ * IMPORTANT:
+ * This file must NOT create another Supabase client.
+ *
+ * Legacy MVP screens still import:
+ *   import { supabase } from "./supabase";
+ *
+ * V2 uses:
+ *   src/services/supabase/client.ts
+ *
+ * Both now resolve to the SAME Supabase client instance.
+ * This prevents multiple GoTrue/Auth clients from competing
+ * for the same browser session and auth lock.
  */
 
-type ExtraConfig = {
-  supabaseUrl?: string;
-  supabaseAnonKey?: string;
-};
-
-function getExtra(): ExtraConfig {
-  const extra =
-    (Constants.expoConfig as any)?.extra ??
-    (Constants as any)?.manifest?.extra ??
-    (Constants as any)?.manifest2?.extra ??
-    {};
-  return extra as ExtraConfig;
-}
-
-const extra = getExtra();
-
-// 🔐 Preferred: ENV (from .env.local)
-const envSupabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
-const envSupabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
-
-// 🛟 Fallback: expo.extra (in case env is missing)
-const supabaseUrl = String(envSupabaseUrl ?? extra?.supabaseUrl ?? "").trim();
-const supabaseAnonKey = String(envSupabaseAnonKey ?? extra?.supabaseAnonKey ?? "").trim();
-
-// ✅ Export resolved config for debugging / health checks
-export const SUPABASE_URL = supabaseUrl;
-export const SUPABASE_ANON_KEY = supabaseAnonKey;
-
-if (!supabaseUrl || !supabaseAnonKey) {
-  const msg =
-    "[Supabase] Missing Supabase config. Expected EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY";
-
-  if (__DEV__) {
-    console.error(msg, {
-      hasUrl: !!supabaseUrl,
-      hasAnonKey: !!supabaseAnonKey,
-    });
-    throw new Error(msg);
-  } else {
-    console.warn(msg);
-  }
-}
-
-export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-  auth: {
-    persistSession: true,
-    autoRefreshToken: true,
-    detectSessionInUrl: false,
-  },
-});
+export {
+  supabase,
+  SUPABASE_URL,
+  SUPABASE_ANON_KEY,
+} from "../src/services/supabase/client";
