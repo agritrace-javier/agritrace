@@ -1,4 +1,4 @@
-﻿import { Ionicons } from "@expo/vector-icons";
+import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import {
   Pressable,
@@ -34,7 +34,11 @@ export function Dashboard() {
         <View style={styles.header}>
           <View>
             <Text style={styles.eyebrow}>AGRITRACE</Text>
-            <Text style={styles.title}>Agricultural Traceability</Text>
+
+            <Text style={styles.title}>
+              Agricultural Traceability
+            </Text>
+
             <Text style={styles.subtitle}>
               Track lots, verify origin and follow the product journey.
             </Text>
@@ -42,7 +46,10 @@ export function Dashboard() {
 
           <View style={styles.statusBadge}>
             <View style={styles.statusDot} />
-            <Text style={styles.statusText}>System Online</Text>
+
+            <Text style={styles.statusText}>
+              System Online
+            </Text>
           </View>
         </View>
 
@@ -89,7 +96,10 @@ export function Dashboard() {
 
         <View style={styles.sectionHeader}>
           <View>
-            <Text style={styles.sectionTitle}>Quick Actions</Text>
+            <Text style={styles.sectionTitle}>
+              Quick Actions
+            </Text>
+
             <Text style={styles.sectionSubtitle}>
               Common traceability operations
             </Text>
@@ -101,10 +111,17 @@ export function Dashboard() {
             style={styles.primaryAction}
             onPress={() => router.push("/scan")}
           >
-            <Ionicons name="qr-code-outline" size={28} color="#FFFFFF" />
+            <Ionicons
+              name="qr-code-outline"
+              size={28}
+              color="#FFFFFF"
+            />
 
             <View style={styles.actionText}>
-              <Text style={styles.primaryActionTitle}>Scan QR</Text>
+              <Text style={styles.primaryActionTitle}>
+                Scan QR
+              </Text>
+
               <Text style={styles.primaryActionSubtitle}>
                 Verify a product or lot
               </Text>
@@ -122,7 +139,10 @@ export function Dashboard() {
             />
 
             <View style={styles.actionText}>
-              <Text style={styles.secondaryActionTitle}>View Lots</Text>
+              <Text style={styles.secondaryActionTitle}>
+                View Lots
+              </Text>
+
               <Text style={styles.secondaryActionSubtitle}>
                 Explore registered lots
               </Text>
@@ -140,9 +160,33 @@ export function Dashboard() {
             />
 
             <View style={styles.actionText}>
-              <Text style={styles.secondaryActionTitle}>Create Lot</Text>
+              <Text style={styles.secondaryActionTitle}>
+                Create Lot
+              </Text>
+
               <Text style={styles.secondaryActionSubtitle}>
                 Register agricultural product
+              </Text>
+            </View>
+          </Pressable>
+
+          <Pressable
+            style={styles.secondaryAction}
+            onPress={() => router.push("/farms")}
+          >
+            <Ionicons
+              name="business-outline"
+              size={28}
+              color={colors.brand.primary}
+            />
+
+            <View style={styles.actionText}>
+              <Text style={styles.secondaryActionTitle}>
+                Farm Management
+              </Text>
+
+              <Text style={styles.secondaryActionSubtitle}>
+                Manage agricultural properties
               </Text>
             </View>
           </Pressable>
@@ -150,14 +194,21 @@ export function Dashboard() {
 
         <View style={styles.sectionHeader}>
           <View>
-            <Text style={styles.sectionTitle}>Recent Lots</Text>
+            <Text style={styles.sectionTitle}>
+              Recent Lots
+            </Text>
+
             <Text style={styles.sectionSubtitle}>
               Latest agricultural records
             </Text>
           </View>
 
-          <Pressable onPress={() => router.push("/catalog")}>
-            <Text style={styles.viewAll}>View all</Text>
+          <Pressable
+            onPress={() => router.push("/catalog")}
+          >
+            <Text style={styles.viewAll}>
+              View all
+            </Text>
           </Pressable>
         </View>
 
@@ -169,7 +220,9 @@ export function Dashboard() {
               onPress={() =>
                 router.push({
                   pathname: "/lot/[id]",
-                  params: { id: lot.id },
+                  params: {
+                    id: lot.id,
+                  },
                 })
               }
             >
@@ -187,7 +240,7 @@ export function Dashboard() {
                 </Text>
 
                 <Text style={styles.lotMeta}>
-                  {lot.id} · {lot.origin}
+                  {lot.id} � {lot.origin}
                 </Text>
               </View>
 
@@ -206,7 +259,11 @@ export function Dashboard() {
                 size={32}
                 color={colors.light.textSecondary}
               />
-              <Text style={styles.emptyTitle}>No lots yet</Text>
+
+              <Text style={styles.emptyTitle}>
+                No lots yet
+              </Text>
+
               <Text style={styles.emptyText}>
                 Create your first agricultural lot to begin traceability.
               </Text>
