@@ -1,5 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import {
     ActivityIndicator,
@@ -27,6 +27,9 @@ import {
 import type { Field } from "./fieldsService";
 
 export function FieldsScreen() {
+    const { farmId } = useLocalSearchParams<{
+  farmId: string;
+}>();
   const {
     user,
     organization,
@@ -39,7 +42,7 @@ export function FieldsScreen() {
   const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [farmId, setFarmId] = useState("");
+
 
   const [name, setName] = useState("");
   const [code, setCode] = useState("");
