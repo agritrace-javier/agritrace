@@ -12,7 +12,6 @@ import {
   View,
 } from "react-native";
 
-import { useAuth } from "../auth";
 import {
   colors,
   layout,
@@ -20,6 +19,7 @@ import {
   spacing,
   typography,
 } from "../../theme/tokens";
+import { useAuth } from "../auth";
 
 import {
   createFarm,
@@ -290,7 +290,7 @@ export function FarmsScreen() {
                 <TextInput
                   value={name}
                   onChangeText={setName}
-                  placeholder="Example: Finca El Paraíso"
+                  placeholder="Example: Finca El Paraï¿½so"
                   placeholderTextColor={
                     colors.light.textSecondary
                   }
@@ -539,6 +539,49 @@ export function FarmsScreen() {
                       {farm.description}
                     </Text>
                   ) : null}
+                  <Pressable
+  onPress={() =>
+    router.push({
+      pathname: "/fields",
+      params: {
+        farmId: farm.id,
+      },
+    })
+  }
+  style={{
+    alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    marginTop: spacing.md,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    backgroundColor: colors.brand.primaryLight,
+    borderRadius: radius.md,
+  }}
+>
+  <Ionicons
+    name="grid-outline"
+    size={18}
+    color={colors.brand.primaryDark}
+  />
+
+  <Text
+    style={{
+      color: colors.brand.primaryDark,
+      fontSize: typography.size.sm,
+      fontWeight: typography.weight.semibold,
+    }}
+  >
+    View Fields
+  </Text>
+
+  <Ionicons
+    name="chevron-forward"
+    size={16}
+    color={colors.brand.primaryDark}
+  />
+</Pressable>
                 </View>
               </View>
             ))}
