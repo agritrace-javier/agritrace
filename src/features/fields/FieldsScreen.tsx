@@ -54,10 +54,11 @@ export function FieldsScreen() {
   const [soilType, setSoilType] = useState("");
   const [elevation, setElevation] = useState("");
   const [editingFieldId, setEditingFieldId] = useState<string | null>(null);
+  const [updatingFieldId, setUpdatingFieldId] = useState<string | null>(null);
 
   const canManageFields = can("farms.manage");
   const handleStartEdit = (field: Field) => {
-  if (isCreating || !canManageFields) return;
+  if (isCreating || updatingFieldId !== null || !canManageFields) return;
 
   if (
     field.organization_id !== organization?.id ||
@@ -75,8 +76,43 @@ export function FieldsScreen() {
   setDescription(field.description ?? "");
   setError(null);
 };
+const handleToggleActive = async (field: Field) => {
+  if (isCreating || updatingFieldId !== null) return;
+
+  if (
+    !hasActiveMembership ||
+    !canManageFields ||
+    field.organization_id !== organization?.id ||
+    field.farm_id !== farmId
+  ) {
+    return;
+  }
+
+  try {
+    setUpdatingFieldId(field.id);
+    setError(null);
+
+    const updatedField = await updateField(field.id, {
+      is_active: !field.is_active,
+    });
+
+    setFields((current) =>
+      current.map((item) =>
+        item.id === updatedField.id ? updatedField : item
+      )
+    );
+  } catch (statusError) {
+    setError(
+      statusError instanceof Error
+        ? statusError.message
+        : "Could not update field status."
+    );
+  } finally {
+    setUpdatingFieldId(null);
+  }
+};
 const handleCancelEdit = () => {
-  if (isCreating) return;
+  if (isCreating || updatingFieldId !== null) return;
 
   setEditingFieldId(null);
   setName("");
@@ -573,6 +609,31 @@ const handleCreateField = async () => {
           <Text style={{ color: colors.light.textSecondary }}>
             Status: {field.is_active ? "Active" : "Inactive"}
           </Text>
+                    {canManageFields ? (
+            <Pressable
+              onPress={() => handleToggleActive(field)}
+              disabled={isCreating || updatingFieldId !== null}
+              accessibilityRole="button"
+              style={{
+                alignSelf: "flex-start",
+                paddingVertical: spacing.sm,
+                paddingHorizontal: spacing.md,
+                borderWidth: 1,
+                borderColor: colors.light.border,
+                borderRadius: radius.md,
+                opacity:
+                  isCreating || updatingFieldId !== null ? 0.6 : 1,
+              }}
+            >
+              <Text style={{ color: colors.light.text }}>
+                {updatingFieldId === field.id
+                  ? "Updating..."
+                  : field.is_active
+                    ? "Deactivate"
+                    : "Activate"}
+              </Text>
+            </Pressable>
+          ) : null}
 
           {field.description ? (
             <Text style={{ color: colors.light.textSecondary }}>
