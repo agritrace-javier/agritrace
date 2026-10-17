@@ -2,28 +2,29 @@ import { Ionicons } from "@expo/vector-icons";
 import { router, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import {
-    ActivityIndicator,
-    Alert,
-    Pressable,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    View,
+  ActivityIndicator,
+  Alert,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
 } from "react-native";
 import { useAuth } from "../auth";
 
 import {
-    colors,
-    layout,
-    radius,
-    spacing,
-    typography,
+  colors,
+  layout,
+  radius,
+  spacing,
+  typography,
 } from "../../theme/tokens";
 
 import {
-    createField,
-    getFieldsByFarm,
+  createField,
+  getFieldsByFarm,
+  updateField,
 } from "./fieldsService";
 
 import type { Field } from "./fieldsService";
@@ -52,34 +53,55 @@ export function FieldsScreen() {
   const [description, setDescription] = useState("");
   const [soilType, setSoilType] = useState("");
   const [elevation, setElevation] = useState("");
+  const [editingFieldId, setEditingFieldId] = useState<string | null>(null);
 
   const canManageFields = can("farms.manage");
-const handleCreateField = async () => {  if (isCreating) return;
+  const handleStartEdit = (field: Field) => {
+  if (isCreating || !canManageFields) return;
+
+  if (
+    field.organization_id !== organization?.id ||
+    field.farm_id !== farmId
+  ) {
+    return;
+  }
+
+  setEditingFieldId(field.id);
+  setName(field.name);
+  setCode(field.code ?? "");
+  setArea(field.area_hectares?.toString() ?? "");
+  setSoilType(field.soil_type ?? "");
+  setElevation(field.elevation_meters?.toString() ?? "");
+  setDescription(field.description ?? "");
+  setError(null);
+};
+const handleCancelEdit = () => {
+  if (isCreating) return;
+
+  setEditingFieldId(null);
+  setName("");
+  setCode("");
+  setArea("");
+  setSoilType("");
+  setElevation("");
+  setDescription("");
+    setError(null);
+};
+
+const handleCreateField = async () => {
+  if (isCreating) return;
+
   if (!organization?.id || !farmId || !user?.id) {
-    Alert.alert(
-      "Organization unavailable",
-      "The organization or farm could not be determined."
-    );
+    setError("The organization or farm could not be determined.");
     return;
   }
 
-  if (!canManageFields) {
-    Alert.alert(
-      "Permission required",
-      "Your role cannot create fields."
-    );
+  if (!hasActiveMembership || !canManageFields) {
+    setError("Your role cannot create or edit fields.");
     return;
   }
 
-  const trimmedName = name.trim();
-
-  if (!trimmedName) {
-    Alert.alert(
-      "Field name required",
-      "Please enter a field name."
-    );
-    return;
-  }
+  const isEditing = editingFieldId !== null;
 
   const parseOptionalNumber = (
     value: string,
@@ -99,28 +121,57 @@ const handleCreateField = async () => {  if (isCreating) return;
   };
 
   try {
-    const areaHectares = parseOptionalNumber(area, "Area");
-    const elevationMeters = parseOptionalNumber(
-      elevation,
-      "Elevation"
-    );
-
-    setIsCreating(true);
     setError(null);
 
-    const field = await createField({
-      organization_id: organization.id,
-      farm_id: farmId,
+    const trimmedName = name.trim();
+
+    if (!trimmedName) {
+      throw new Error("Please enter a field name.");
+    }
+
+    const input = {
       name: trimmedName,
       code: code.trim() || null,
-      area_hectares: areaHectares,
+      area_hectares: parseOptionalNumber(area, "Area"),
       soil_type: soilType.trim() || null,
-      elevation_meters: elevationMeters,
+      elevation_meters: parseOptionalNumber(elevation, "Elevation"),
       description: description.trim() || null,
-    });
+    };
 
-    setFields((current) => [...current, field]);
+    if (editingFieldId !== null) {
+      const selectedField = fields.find(
+        (field) => field.id === editingFieldId
+      );
 
+      if (
+        !selectedField ||
+        selectedField.organization_id !== organization.id ||
+        selectedField.farm_id !== farmId
+      ) {
+        throw new Error("The selected field is unavailable.");
+      }
+    }
+
+    setIsCreating(true);
+
+    const savedField =
+      editingFieldId !== null
+        ? await updateField(editingFieldId, input)
+        : await createField({
+            organization_id: organization.id,
+            farm_id: farmId,
+            ...input,
+          });
+
+    setFields((current) =>
+      isEditing
+        ? current.map((field) =>
+            field.id === savedField.id ? savedField : field
+          )
+        : [...current, savedField]
+    );
+
+    setEditingFieldId(null);
     setName("");
     setCode("");
     setArea("");
@@ -129,22 +180,21 @@ const handleCreateField = async () => {  if (isCreating) return;
     setDescription("");
 
     Alert.alert(
-      "Field created",
-      `${field.name} was registered successfully.`
+      isEditing ? "Field updated" : "Field created",
+      `${savedField.name} was saved successfully.`
     );
-  } catch (createError) {
+  } catch (saveError) {
     const message =
-      createError instanceof Error
-        ? createError.message
-        : "Could not create field.";
+      saveError instanceof Error
+        ? saveError.message
+        : "Could not save field.";
 
     setError(message);
-    Alert.alert("Could not create field", message);
+    Alert.alert("Could not save field", message);
   } finally {
     setIsCreating(false);
   }
 };
-
   const loadFields = useCallback(async () => {
     if (!organization?.id || !farmId) {
       setFields([]);
@@ -247,7 +297,7 @@ const handleCreateField = async () => {  if (isCreating) return;
         fontWeight: typography.weight.bold,
       }}
     >
-      Add Field
+    {editingFieldId !== null ? "Edit Field" : "Add Field"}
     </Text>
 
     <TextInput
@@ -374,9 +424,33 @@ const handleCreateField = async () => {  if (isCreating) return;
           fontWeight: typography.weight.bold,
         }}
       >
-        {isCreating ? "Creating..." : "Create Field"}
+        {isCreating
+  ? "Saving..."
+  : editingFieldId !== null
+    ? "Save Changes"
+    : "Create Field"}
       </Text>
     </Pressable>
+        {editingFieldId !== null ? (
+      <Pressable
+        onPress={handleCancelEdit}
+        disabled={isCreating}
+        accessibilityRole="button"
+        style={{
+          minHeight: 48,
+          alignItems: "center",
+          justifyContent: "center",
+          borderWidth: 1,
+          borderColor: colors.light.border,
+          borderRadius: radius.md,
+          opacity: isCreating ? 0.6 : 1,
+        }}
+      >
+        <Text style={{ color: colors.light.text }}>
+          Cancel
+        </Text>
+      </Pressable>
+    ) : null}
   </View>
 ) : null}
         {error ? (
@@ -463,6 +537,26 @@ const handleCreateField = async () => {  if (isCreating) return;
           >
             {field.name}
           </Text>
+                    {canManageFields ? (
+            <Pressable
+              onPress={() => handleStartEdit(field)}
+              disabled={isCreating}
+              accessibilityRole="button"
+              style={{
+                alignSelf: "flex-start",
+                paddingVertical: spacing.sm,
+                paddingHorizontal: spacing.md,
+                borderWidth: 1,
+                borderColor: colors.brand.primary,
+                borderRadius: radius.md,
+                opacity: isCreating ? 0.6 : 1,
+              }}
+            >
+              <Text style={{ color: colors.brand.primary }}>
+                Edit
+              </Text>
+            </Pressable>
+          ) : null}
 
           {field.code ? (
             <Text style={{ color: colors.light.textSecondary }}>
