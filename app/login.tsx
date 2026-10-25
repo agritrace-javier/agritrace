@@ -18,10 +18,9 @@ import { supabase } from "../src/services/supabase";
 export default function LoginScreen() {
   const router = useRouter();
 
-  const {
+    const {
     isAuthenticated,
     isLoading,
-    refreshMembership,
   } = useAuth();
 
   const mountedRef = useRef(true);
@@ -162,18 +161,14 @@ export default function LoginScreen() {
         "Loading your AgriTrace workspace..."
       );
 
-      await refreshMembership();
+      
 
-      if (!mountedRef.current) {
+            if (!mountedRef.current) {
         return;
       }
 
-      navigationStartedRef.current = true;
-
       setStatus("");
       setBusy(false);
-
-      router.replace("/dashboard");
     } catch (error) {
       if (!mountedRef.current) {
         return;

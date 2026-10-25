@@ -1,5 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
+import { useState } from "react";
 import {
   Pressable,
   ScrollView,
@@ -7,6 +8,7 @@ import {
   Text,
   View,
 } from "react-native";
+import { useAuth } from "../auth";
 
 import { useLots } from "../../../app/lots-store";
 import { StatCard } from "../../components/StatCard";
@@ -20,6 +22,29 @@ import {
 
 export function Dashboard() {
   const { lots } = useLots();
+  const { signOut } = useAuth();
+
+  const [isSigningOut, setIsSigningOut] = useState(false);
+  const [signOutError, setSignOutError] = useState<string | null>(null);
+
+  const handleSignOut = async () => {
+    if (isSigningOut) return;
+
+    try {
+      setIsSigningOut(true);
+      setSignOutError(null);
+
+      await signOut();
+    } catch (error) {
+      setSignOutError(
+        error instanceof Error
+          ? error.message
+          : "Could not sign out. Please try again."
+      );
+    } finally {
+      setIsSigningOut(false);
+    }
+  };
 
   const recentLots = [...lots]
     .sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))
@@ -52,7 +77,49 @@ export function Dashboard() {
             </Text>
           </View>
         </View>
+        <View
+          style={{
+            alignItems: "flex-end",
+            gap: spacing.sm,
+            marginBottom: spacing.md,
+          }}
+        >
+          <Pressable
+            onPress={handleSignOut}
+            disabled={isSigningOut}
+            accessibilityRole="button"
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: spacing.sm,
+              minHeight: 44,
+              paddingHorizontal: spacing.md,
+              borderWidth: 1,
+              borderColor: colors.light.border,
+              borderRadius: radius.md,
+              opacity: isSigningOut ? 0.6 : 1,
+            }}
+          >
+            <Ionicons
+              name="log-out-outline"
+              size={20}
+              color={colors.light.text}
+            />
 
+            <Text style={{ color: colors.light.text }}>
+              {isSigningOut ? "Signing out..." : "Sign Out"}
+            </Text>
+          </Pressable>
+
+          {signOutError ? (
+            <Text
+              accessibilityRole="alert"
+              style={{ color: colors.light.error }}
+            >
+              {signOutError}
+            </Text>
+          ) : null}
+        </View>
         <View style={styles.stats}>
           <StatCard
             label="Total Lots"
@@ -240,7 +307,7 @@ export function Dashboard() {
                 </Text>
 
                 <Text style={styles.lotMeta}>
-                  {lot.id} · {lot.origin}
+                  {lot.id} Â· {lot.origin}
                 </Text>
               </View>
 
