@@ -635,6 +635,50 @@ const handleCreateField = async () => {
             </Pressable>
           ) : null}
 
+          <Pressable
+            onPress={() =>
+              router.push({
+                pathname: "/crops",
+                params: { fieldId: field.id },
+              })
+            }
+            disabled={
+              !hasActiveMembership ||
+              field.organization_id !== organization?.id ||
+              isCreating ||
+              updatingFieldId !== null
+            }
+            accessibilityRole="button"
+            accessibilityLabel={`View crops for ${field.name}`}
+            style={{
+              minHeight: 48,
+              flexDirection: "row",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: spacing.sm,
+              borderWidth: 1,
+              borderColor: colors.brand.primary,
+              borderRadius: radius.md,
+              paddingHorizontal: spacing.md,
+              opacity:
+                !hasActiveMembership ||
+                field.organization_id !== organization?.id ||
+                isCreating ||
+                updatingFieldId !== null
+                  ? 0.6
+                  : 1,
+            }}
+          >
+            <Ionicons
+              name="leaf-outline"
+              size={20}
+              color={colors.brand.primary}
+            />
+            <Text style={{ color: colors.brand.primary }}>
+              View Crops
+            </Text>
+          </Pressable>
+
           {field.description ? (
             <Text style={{ color: colors.light.textSecondary }}>
               {field.description}
