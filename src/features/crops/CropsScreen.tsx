@@ -1,4 +1,4 @@
-import { useLocalSearchParams } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -444,6 +444,53 @@ export function CropsScreen() {
                         </Text>
                       </Pressable>
                     ) : null}
+                    <Pressable
+                      onPress={() => {
+                        if (
+                          !hasActiveMembership ||
+                          savingRef.current === currentData.scope ||
+                          statusUpdateRef.current?.scope === currentData.scope ||
+                          editingPlanting !== null ||
+                          planting.organization_id !== organizationId ||
+                          planting.field_id !== fieldId
+                        ) {
+                          return;
+                        }
+
+                        router.push({
+                          pathname: "/harvests",
+                          params: { plantingId: planting.id },
+                        });
+                      }}
+                      disabled={
+                        !hasActiveMembership ||
+                        isPlantingSaving ||
+                        isUpdatingPlanting ||
+                        editingPlanting !== null
+                      }
+                      accessibilityRole="button"
+                      accessibilityLabel={`View harvests for ${planting.name}`}
+                      style={{
+                        minHeight: 48,
+                        alignSelf: "flex-start",
+                        justifyContent: "center",
+                        paddingHorizontal: spacing.md,
+                        borderWidth: 1,
+                        borderColor: colors.brand.primary,
+                        borderRadius: radius.md,
+                        opacity:
+                          !hasActiveMembership ||
+                          isPlantingSaving ||
+                          isUpdatingPlanting ||
+                          editingPlanting !== null
+                            ? 0.6
+                            : 1,
+                      }}
+                    >
+                      <Text style={{ color: colors.brand.primary }}>
+                        View Harvests
+                      </Text>
+                    </Pressable>
                     {planting.established_on ? (
                       <Text style={styles.body}>
                         Established: {planting.established_on}
