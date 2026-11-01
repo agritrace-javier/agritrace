@@ -230,3 +230,28 @@ export async function setHarvestActive(
     is_active: isActive,
   });
 }
+
+export async function getActiveHarvestsByOrganization(
+  organizationId: string
+): Promise<Harvest[]> {
+  const id = organizationId.trim();
+
+  if (!id) {
+    throw new Error("Organization is required.");
+  }
+
+  const { data, error } = await supabase
+    .from("harvests")
+    .select("*")
+    .eq("organization_id", id)
+    .eq("is_active", true)
+    .order("harvest_date", { ascending: false })
+    .order("created_at", { ascending: false })
+    .order("id", { ascending: true });
+
+  if (error) {
+    throw error;
+  }
+
+  return (data ?? []) as Harvest[];
+}

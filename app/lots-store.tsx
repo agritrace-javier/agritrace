@@ -1,31 +1,29 @@
-// app/lots-store.tsx
 import React, {
   createContext,
   useContext,
   useEffect,
-  useMemo,
   useRef,
   useState,
 } from "react";
-import type { Lang } from "./i18n";
-import { initialLots, Lot } from "./lots";
-import { storageGet, storageRemove, storageSet } from "./storage";
-import type { ThemeName } from "./theme";
-
-import {
-  deleteLotRemote,
-  fetchLotsRemote,
-  subscribeLotsRemote,
-  uploadLotPhotosIfNeeded,
-  upsertLotRemote,
-} from "./lots-remote";
-
-// AuthProvider is the single owner of Supabase Auth/session lifecycle.
 import { useAuth } from "../src/features/auth";
+import {
+  createOrganizationLot,
+  getLotsByOrganization,
+  updateOrganizationLot,
+} from "../src/features/lots/lotsService";
+import type {
+  OrganizationLot,
+  UpdateLotInput,
+} from "../src/features/lots/lotsService";
+import type { Lang } from "./i18n";
+import type { Lot } from "./lots";
+import { uploadLotPhotosIfNeeded } from "./lots-remote";
+import { storageGet, storageSet } from "./storage";
+import { supabase } from "./supabase";
+import type { ThemeName } from "./theme";
 
 type Mode = "client" | "operator";
 
-/** ✅ Starknet (Simulated) proof stored per-lot */
 export type LotProof = {
   lotId: string;
   hash: string;
@@ -42,777 +40,519 @@ type SaveLotResult =
 
 type LotsContextValue = {
   lots: Lot[];
-  addLot: (lot: Lot) => void; // kept for compatibility
-  saveLot: (lot: Lot) => Promise<SaveLotResult>; // ✅ NEW (awaitable)
-  deleteLot: (id: string) => void;
+  isLoadingLots: boolean;
+  lotsError: string | null;
+  refreshLots: () => Promise<void>;
+  addLot: (lot: Lot) => void;
+  saveLot: (lot: Lot) => Promise<SaveLotResult>;
+  updateLot: (id: string, patch: Partial<Lot>) => Promise<SaveLotResult>;
+  deleteLot: (id: string) => Promise<void>;
   getLotById: (id: string) => Lot | undefined;
   resetLots: () => void;
-
-  updateLot: (id: string, patch: Partial<Lot>) => void;
-
   mode: Mode;
   enterOperatorWithPin: (pin: string) => boolean;
   exitToClient: () => void;
-
   lang: Lang;
   setLang: (lang: Lang) => void;
-
   themeName: ThemeName;
-  setThemeName: (t: ThemeName) => void;
-
+  setThemeName: (theme: ThemeName) => void;
   proofs: ProofStore;
-  getProofByLotId: (lotId: string) => LotProof | undefined;
+  getProofByLotId: (id: string) => LotProof | undefined;
   setProofForLot: (proof: LotProof) => void;
-  clearProofForLot: (lotId: string) => void;
+  clearProofForLot: (id: string) => void;
   resetProofs: () => void;
 };
 
 const LotsContext = createContext<LotsContextValue | null>(null);
+const MODE_KEY = "agritrace_mode_v1";
+const LANG_KEY = "agritrace_lang_v1";
+const THEME_KEY = "agritrace_theme_v1";
 
-/**
- * ✅ PASO 3 — keys are now user-scoped:
- *   <base>:<userId>
- * fallback when no session: <base>:anon
- *
- * We also keep legacy keys (no suffix) for one-time migration.
- */
-const STORAGE_BASE_LOTS = "agritrace_lots_v2";
-const STORAGE_BASE_MODE = "agritrace_mode_v1";
-const STORAGE_BASE_LANG = "agritrace_lang_v1";
-const STORAGE_BASE_THEME = "agritrace_theme_v1";
-const STORAGE_BASE_PROOFS = "agritrace_proofs_v1";
-const STORAGE_BASE_DELETED_DEMOS = "agritrace_deleted_demo_ids_v1";
-
-const OPERATOR_PIN = "1616";
-
-/** ---------------------------
- * ✅ Helpers
- * --------------------------*/
-function s(v: any) {
-  return String(v ?? "").trim();
+function normalizeId(id: string): string {
+  return id.trim().toUpperCase();
 }
 
-function normalizeId(id: any) {
-  return s(id).toUpperCase();
-}
-
-function normalizePhotos(v: any): string[] | undefined {
-  if (v === undefined) return undefined;
-  if (!Array.isArray(v)) return undefined;
-  const out = v.map((p) => s(p)).filter(Boolean).slice(0, 12);
-  return out.length ? out : [];
-}
-
-function normalizeProductFields(x: any): { product_en: string; product_es: string } {
-  const en = s(x?.product_en);
-  const es = s(x?.product_es);
-
-  const legacy = s(x?.product);
-  const esTypo1 = s(x?.product_ests);
-  const esTypo2 = s(x?.product_est);
-
-  const finalEn = en || legacy || es || esTypo1 || esTypo2;
-  const finalEs = es || esTypo1 || esTypo2 || legacy || en;
-
-  return { product_en: finalEn, product_es: finalEs };
-}
-
-function normalizeCreatedAt(v: any): number {
-  if (typeof v === "number" && Number.isFinite(v)) return v;
-  if (typeof v === "string") {
-    const n = Number(v);
-    if (Number.isFinite(n)) return n;
+function errorMessage(error: unknown): string {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "message" in error &&
+    typeof error.message === "string"
+  ) {
+    return error.message;
   }
-  return Date.now();
+  return "Could not complete the lot operation.";
 }
 
-function safeParseStringArray(raw: string | null): string[] {
-  if (!raw) return [];
-  try {
-    const data = JSON.parse(raw);
-    if (!Array.isArray(data)) return [];
-    return data.map((x) => normalizeId(x)).filter(Boolean);
-  } catch {
-    return [];
-  }
-}
-
-function isDemoLotId(id: string) {
-  const demoIds = new Set(initialLots.map((x) => normalizeId(x.id)));
-  return demoIds.has(normalizeId(id));
-}
-
-function mergeWithInitialLots(existing: Lot[], deletedDemoIds: Set<string>) {
-  const map = new Map<string, Lot>();
-  for (const l of existing) map.set(normalizeId(l.id), l);
-
-  for (const base of initialLots) {
-    const baseId = normalizeId(base.id);
-    if (deletedDemoIds.has(baseId)) continue;
-    if (!map.has(baseId)) map.set(baseId, base as any);
-  }
-
-  // Keep order: user lots first, then missing demos
-  const existingIds = new Set(existing.map((x) => normalizeId(x.id)));
-  const missing = initialLots.filter((x) => {
-    const id = normalizeId(x.id);
-    if (deletedDemoIds.has(id)) return false;
-    return !existingIds.has(id);
-  });
-
-  return [...existing, ...(missing as any)];
-}
-
-function safeParseLots(raw: string | null): Lot[] {
-  if (!raw) return initialLots;
-
-  try {
-    const data = JSON.parse(raw);
-    if (!Array.isArray(data)) return initialLots;
-
-    const cleaned: Lot[] = data
-      .filter((x) => x && typeof x === "object")
-      .map((x: any) => {
-        const id = normalizeId(x.id);
-        if (!id) return null;
-
-        const origin = s(x.origin) || "—";
-        const harvestDate = s(x.harvestDate) || "—";
-        const batch = s(x.batch) || "—";
-
-        const { product_en, product_es } = normalizeProductFields(x);
-
-        const finalEn = product_en || "Unknown";
-        const finalEs = product_es || finalEn || "Desconocido";
-
-        const notes = x.notes ? String(x.notes) : undefined;
-        const rating = typeof x.rating === "number" ? x.rating : undefined;
-
-        const createdAt = normalizeCreatedAt(x.createdAt);
-        const photos = normalizePhotos(x.photos);
-
-        return {
-          id,
-          origin,
-          harvestDate,
-          batch,
-          product_en: finalEn,
-          product_es: finalEs,
-          notes,
-          rating,
-          createdAt,
-          photos,
-        } as Lot;
-      })
-      .filter(Boolean) as Lot[];
-
-    return cleaned.length ? cleaned : initialLots;
-  } catch {
-    return initialLots;
-  }
-}
-
-function safeParseMode(raw: string | null): Mode | null {
-  if (!raw) return null;
-  return raw === "operator" || raw === "client" ? raw : null;
-}
-
-function safeParseLang(raw: string | null): Lang | null {
-  if (!raw) return null;
-  return raw === "en" || raw === "es" ? raw : null;
-}
-
-function safeParseTheme(raw: string | null): ThemeName | null {
-  if (!raw) return null;
-  return raw === "light" || raw === "dark" ? raw : null;
-}
-
-function safeParseProofs(raw: string | null): ProofStore {
+function parseProofs(raw: string | null): ProofStore {
   if (!raw) return {};
   try {
-    const obj = JSON.parse(raw);
-    if (!obj || typeof obj !== "object") return {};
-
-    const out: ProofStore = {};
-    for (const [k, v] of Object.entries(obj)) {
-      const p: any = v;
-      const lotId = normalizeId(p?.lotId ?? k ?? "");
-      const hash = s(p?.hash);
-      const txHash = s(p?.txHash);
-      const blockNumber = Number(p?.blockNumber);
-      const ts = Number(p?.ts);
-
-      if (!lotId || !hash || !txHash) continue;
-      if (!Number.isFinite(blockNumber)) continue;
-      if (!Number.isFinite(ts)) continue;
-
-      out[lotId] = { lotId, hash, txHash, blockNumber, ts };
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
     }
-    return out;
+
+    const result: ProofStore = {};
+    for (const value of Object.values(parsed)) {
+      if (!value || typeof value !== "object") continue;
+      const proof = value as Partial<LotProof>;
+      if (
+        typeof proof.lotId !== "string" ||
+        !proof.lotId.trim() ||
+        typeof proof.hash !== "string" ||
+        typeof proof.txHash !== "string" ||
+        typeof proof.blockNumber !== "number" ||
+        !Number.isFinite(proof.blockNumber) ||
+        typeof proof.ts !== "number" ||
+        !Number.isFinite(proof.ts)
+      ) {
+        continue;
+      }
+      const id = normalizeId(proof.lotId);
+      result[id] = {
+        lotId: id,
+        hash: proof.hash,
+        txHash: proof.txHash,
+        blockNumber: proof.blockNumber,
+        ts: proof.ts,
+      };
+    }
+    return result;
   } catch {
     return {};
   }
 }
 
-function normalizeLotForStore(input: any): Lot | null {
-  const id = normalizeId(input?.id);
-  if (!id) return null;
+async function preparePhotos(lot: Lot): Promise<string[]> {
+  const original = Array.from(
+    new Set((lot.photos ?? []).map((uri) => uri.trim()).filter(Boolean))
+  );
 
-  const origin = s(input?.origin) || "—";
-  const harvestDate = s(input?.harvestDate) || "—";
-  const batch = s(input?.batch) || "—";
+  if (original.length > 12) {
+    throw new Error("A lot can contain at most 12 photos.");
+  }
 
-  const { product_en, product_es } = normalizeProductFields(input);
-  const finalEn = product_en || "Unknown";
-  const finalEs = product_es || finalEn || "Desconocido";
+  const uploaded = await uploadLotPhotosIfNeeded({
+    ...lot,
+    photos: original,
+  });
+  const photos = uploaded.photos ?? [];
 
-  const createdAt = normalizeCreatedAt(input?.createdAt);
-  const photos = normalizePhotos(input?.photos);
-
-  const notes = input?.notes ? String(input.notes) : undefined;
-  const rating = typeof input?.rating === "number" ? input.rating : undefined;
-
-  return {
-    id,
-    origin,
-    harvestDate,
-    batch,
-    product_en: finalEn,
-    product_es: finalEs,
-    notes,
-    rating,
-    createdAt,
-    photos,
-  } as Lot;
+  if (
+    photos.length !== original.length ||
+    photos.some((uri) => !/^https?:\/\//i.test(uri))
+  ) {
+    throw new Error(
+      "Some photos could not be uploaded. The lot was not saved. Please retry."
+    );
+  }
+  return photos;
 }
 
-function errMsg(e: any) {
-  return String(e?.message ?? e ?? "");
-}
-
-function countUserLots(list: Lot[]) {
-  // “user lots” = lots que NO son demos (initialLots)
-  return (list ?? []).filter((l) => l && !isDemoLotId(normalizeId(l.id))).length;
-}
-
-function cacheKey(base: string, userId: string | null) {
-  const uid = s(userId) || "anon";
-  return `${base}:${uid}`;
-}
-
+type ScopedProviderProps = {
+  children: React.ReactNode;
+  userId: string | null;
+  organizationId: string | null;
+  canCreate: boolean;
+  canUpdate: boolean;
+};
 
 export function LotsProvider({ children }: { children: React.ReactNode }) {
-  const { user } = useAuth();
-  const authUserId = user?.id ? String(user.id) : null;
+  const { user, organization, hasActiveMembership, can } = useAuth();
 
-  const [lots, setLots] = useState<Lot[]>(initialLots);
+  const userId = user?.id ?? null;
+  const organizationId =
+    userId && hasActiveMembership ? organization?.id ?? null : null;
+
+  const scope =
+    userId && organizationId ? `${userId}:${organizationId}` : "no-organization";
+
+  return (
+    <ScopedLotsProvider
+      key={scope}
+      userId={userId}
+      organizationId={organizationId}
+      canCreate={hasActiveMembership && can("lots.create")}
+      canUpdate={hasActiveMembership && can("lots.update")}
+    >
+      {children}
+    </ScopedLotsProvider>
+  );
+}
+
+function ScopedLotsProvider({
+  children,
+  userId,
+  organizationId,
+  canCreate,
+  canUpdate,
+}: ScopedProviderProps) {
+  const [lots, setLots] = useState<OrganizationLot[]>([]);
+  const [isLoadingLots, setIsLoadingLots] = useState(!!organizationId);
+  const [lotsError, setLotsError] = useState<string | null>(null);
   const [mode, setMode] = useState<Mode>("client");
   const [lang, setLang] = useState<Lang>("en");
   const [themeName, setThemeName] = useState<ThemeName>("dark");
-
+  const [prefsReady, setPrefsReady] = useState(false);
   const [proofs, setProofs] = useState<ProofStore>({});
-  const [deletedDemoIds, setDeletedDemoIds] = useState<Set<string>>(new Set());
+  const [proofsReady, setProofsReady] = useState(false);
 
-  // ✅ PASO 3 — active userId (drives storage keys)
-  const [activeUserId, setActiveUserId] = useState<string | null>(null);
-  const activeUserIdRef = useRef<string | null>(null);
-  useEffect(() => {
-    activeUserIdRef.current = activeUserId;
-  }, [activeUserId]);
+  const mounted = useRef(false);
+  const requestVersion = useRef(0);
+  const mutationBusy = useRef(false);
+  const lotsRef = useRef(lots);
+  const permissionsRef = useRef({ canCreate, canUpdate });
+  const proofWrites = useRef<Promise<unknown>>(Promise.resolve());
 
-  // Keep refs for latest state used inside async/realtime closures
-  const deletedDemoIdsRef = useRef<Set<string>>(new Set());
-  const lotsRef = useRef<Lot[]>(initialLots);
+  lotsRef.current = lots;
+  permissionsRef.current = { canCreate, canUpdate };
 
-  useEffect(() => {
-    deletedDemoIdsRef.current = deletedDemoIds;
-  }, [deletedDemoIds]);
+  const proofKey =
+    userId && organizationId
+      ? `agritrace_proofs_org_v2:${userId}:${organizationId}`
+      : null;
 
-  useEffect(() => {
-    lotsRef.current = lots;
-  }, [lots]);
+  const refreshLots = async (): Promise<void> => {
+    if (!mounted.current || !organizationId) return;
+    const version = ++requestVersion.current;
+    setIsLoadingLots(true);
+    setLotsError(null);
 
-  // ✅ keep realtime unsubscribe in a ref so we can restart it on auth changes
-  const realtimeUnsubRef = useRef<null | (() => void)>(null);
-
-  async function loadDeletedDemoSet(uid: string | null): Promise<Set<string>> {
-    const key = cacheKey(STORAGE_BASE_DELETED_DEMOS, uid);
-    const rawDeleted = await storageGet(key);
-
-    // legacy migration
-    if (!rawDeleted) {
-      const legacy = await storageGet(STORAGE_BASE_DELETED_DEMOS);
-      if (legacy) {
-        await storageSet(key, legacy);
-      }
-    }
-
-    const deleted = safeParseStringArray(rawDeleted ?? (await storageGet(key)));
-    return new Set(deleted.map((x) => normalizeId(x)));
-  }
-
-  async function loadLotsFromCache(uid: string | null, deletedSet: Set<string>) {
-    const key = cacheKey(STORAGE_BASE_LOTS, uid);
-    let rawLots = await storageGet(key);
-
-    // legacy migration
-    if (!rawLots) {
-      const legacy = await storageGet(STORAGE_BASE_LOTS);
-      if (legacy) {
-        await storageSet(key, legacy);
-        rawLots = legacy;
-      }
-    }
-
-    const parsedLots = safeParseLots(rawLots);
-    const mergedLocal = mergeWithInitialLots(parsedLots, deletedSet);
-    setLots(mergedLocal);
-  }
-
-  async function loadProofsFromCache(uid: string | null) {
-    const key = cacheKey(STORAGE_BASE_PROOFS, uid);
-    let rawProofs = await storageGet(key);
-
-    // legacy migration
-    if (!rawProofs) {
-      const legacy = await storageGet(STORAGE_BASE_PROOFS);
-      if (legacy) {
-        await storageSet(key, legacy);
-        rawProofs = legacy;
-      }
-    }
-
-    const parsedProofs = safeParseProofs(rawProofs);
-    setProofs(parsedProofs);
-  }
-
-  /**
-   * ✅ PASO 2 — Defensive sync:
-   * If remote returns [], DO NOT overwrite UI if we already have user lots locally.
-   */
-  async function syncFromRemote(deletedSet: Set<string>, reason: string) {
-    const remote = await fetchLotsRemote();
-
-    const localNow = lotsRef.current ?? [];
-    const localUserCount = countUserLots(localNow);
-    const remoteCount = Array.isArray(remote) ? remote.length : 0;
-
-    if (remoteCount === 0 && localUserCount > 0) {
-      console.warn(
-        `[LotsProvider] SKIP overwrite (remote=0, localUserLots=${localUserCount}) reason=${reason}`
-      );
-      return;
-    }
-
-    const mergedRemote = mergeWithInitialLots(remote ?? [], deletedSet);
-    setLots(mergedRemote);
-    console.log(
-      `[LotsProvider] Applied remote lots=${remoteCount} (localUserLots=${localUserCount}) reason=${reason}`
-    );
-  }
-
-  function startRealtime() {
-    // stop previous if any
     try {
-      realtimeUnsubRef.current?.();
-    } catch {
-      // ignore
-    }
-
-    realtimeUnsubRef.current = subscribeLotsRemote(async (remoteLots) => {
-      try {
-        const deletedSet = deletedDemoIdsRef.current ?? new Set<string>();
-
-        const localNow = lotsRef.current ?? [];
-        const localUserCount = countUserLots(localNow);
-        const remoteCount = Array.isArray(remoteLots) ? remoteLots.length : 0;
-
-        if (remoteCount === 0 && localUserCount > 0) {
-          console.warn(
-            `[LotsProvider] SKIP realtime overwrite (remote=0, localUserLots=${localUserCount})`
-          );
-          return;
-        }
-
-        const merged = mergeWithInitialLots(remoteLots ?? [], deletedSet);
-        setLots(merged);
-        console.log(
-          `[LotsProvider] Applied realtime lots=${remoteCount} (localUserLots=${localUserCount})`
-        );
-      } catch (e) {
-        console.warn("[Supabase realtime] failed:", errMsg(e));
+      const remote = await getLotsByOrganization(organizationId);
+      if (!mounted.current || version !== requestVersion.current) return;
+      lotsRef.current = remote;
+      setLots(remote);
+    } catch (error) {
+      if (!mounted.current || version !== requestVersion.current) return;
+      setLotsError(errorMessage(error));
+    } finally {
+      if (mounted.current && version === requestVersion.current) {
+        setIsLoadingLots(false);
       }
-    });
-  }
+    }
+  };
 
-  /**
-   * ✅ Load mode/lang/theme (still global, by design)
-   * (these are preferences, not per-user data)
-   */
-  async function loadPrefsOnce() {
-    const rawMode = await storageGet(STORAGE_BASE_MODE);
-    const parsedMode = safeParseMode(rawMode);
-    if (parsedMode) setMode(parsedMode);
+  useEffect(() => {
+    mounted.current = true;
+    void refreshLots();
 
-    const rawLang = await storageGet(STORAGE_BASE_LANG);
-    const parsedLang = safeParseLang(rawLang);
-    if (parsedLang) setLang(parsedLang);
+    const channel = organizationId
+      ? supabase
+          .channel(`lots-v2:${userId}:${organizationId}`)
+          .on(
+            "postgres_changes",
+            {
+              event: "*",
+              schema: "public",
+              table: "lots",
+              filter: `organization_id=eq.${organizationId}`,
+            },
+            () => {
+              void refreshLots();
+            }
+          )
+          .subscribe((status) => {
+            if (status === "SUBSCRIBED") void refreshLots();
+          })
+      : null;
 
-    const rawTheme = await storageGet(STORAGE_BASE_THEME);
-    const parsedTheme = safeParseTheme(rawTheme);
-    if (parsedTheme) setThemeName(parsedTheme);
-  }
+    return () => {
+      mounted.current = false;
+      requestVersion.current += 1;
+      if (channel) void supabase.removeChannel(channel);
+    };
+  }, [organizationId, userId]);
 
-  /**
-   * ✅ PASO 3 — Load per-user cache + migrate legacy if needed
-   */
-  async function loadUserScopedCache(uid: string | null) {
-    const deletedSet = await loadDeletedDemoSet(uid);
-    setDeletedDemoIds(deletedSet);
-
-    await loadLotsFromCache(uid, deletedSet);
-    await loadProofsFromCache(uid);
-
-    return deletedSet;
-  }
-
-  /** ===========================
-   * AuthProvider-driven user lifecycle
-   *
-   * AuthProvider owns Supabase Auth/session state.
-   * LotsProvider reacts to the current user and owns only
-   * user-scoped cache, remote lot sync, and realtime lots.
-   * =========================== */
   useEffect(() => {
     let cancelled = false;
-    const uid = authUserId;
 
-    // Set the ref immediately so any cache writes are scoped
-    // to the same user whose data is being loaded.
-    activeUserIdRef.current = uid;
-    setActiveUserId(uid);
-
-    (async () => {
-      try {
-        const deletedSet = await loadUserScopedCache(uid);
+    void Promise.all([
+      storageGet(MODE_KEY),
+      storageGet(LANG_KEY),
+      storageGet(THEME_KEY),
+    ])
+      .then(([savedMode, savedLang, savedTheme]) => {
         if (cancelled) return;
-
-        try {
-          await syncFromRemote(
-            deletedSet,
-            uid ? "auth-user-change" : "auth-anon"
-          );
-          if (cancelled) return;
-
-          console.log(
-            `[LotsProvider] user-scoped sync OK uid=${uid ?? "anon"}`
-          );
-        } catch (e) {
-          if (!cancelled) {
-            console.warn("[Supabase fetchLotsRemote] failed:", errMsg(e));
-          }
+        if (savedMode === "client" || savedMode === "operator") {
+          setMode(savedMode);
         }
-
-        if (!cancelled) {
-          startRealtime();
+        if (savedLang === "en" || savedLang === "es") setLang(savedLang);
+        if (savedTheme === "light" || savedTheme === "dark") {
+          setThemeName(savedTheme);
         }
-      } catch (e) {
-        if (!cancelled) {
-          console.warn("[LotsProvider user lifecycle] failed:", errMsg(e));
-        }
-      }
-    })();
+      })
+      .catch((error) => {
+        console.warn("[Lots preferences]", errorMessage(error));
+      })
+      .finally(() => {
+        if (!cancelled) setPrefsReady(true);
+      });
 
     return () => {
       cancelled = true;
-
-      try {
-        realtimeUnsubRef.current?.();
-      } catch {
-        // ignore
-      }
-
-      realtimeUnsubRef.current = null;
     };
-  }, [authUserId]);
-
-  /**
-   * Global preferences are independent from authentication.
-   */
-  useEffect(() => {
-    (async () => {
-      try {
-        await loadPrefsOnce();
-      } catch (e) {
-        console.warn("[LotsProvider prefs] failed:", errMsg(e));
-      }
-    })();
   }, []);
 
-  /**
-   * ✅ SAVE caches (per-user)
-   * - lots
-   * - deleted demos
-   * - proofs
-   */
   useEffect(() => {
-    const uid = activeUserIdRef.current;
-    const key = cacheKey(STORAGE_BASE_LOTS, uid);
-    storageSet(key, JSON.stringify(lots));
-  }, [lots]);
-
-  useEffect(() => {
-    const uid = activeUserIdRef.current;
-    const key = cacheKey(STORAGE_BASE_DELETED_DEMOS, uid);
-    const arr = Array.from(deletedDemoIds.values());
-    storageSet(key, JSON.stringify(arr));
-  }, [deletedDemoIds]);
-
-  useEffect(() => {
-    const uid = activeUserIdRef.current;
-    const key = cacheKey(STORAGE_BASE_PROOFS, uid);
-    storageSet(key, JSON.stringify(proofs));
-  }, [proofs]);
-
-  // SAVE prefs (global)
-  useEffect(() => {
-    storageSet(STORAGE_BASE_MODE, mode);
-    storageSet(STORAGE_BASE_LANG, lang);
-    storageSet(STORAGE_BASE_THEME, themeName);
-  }, [mode, lang, themeName]);
-
-  /** ===========================
-   * ✅ Remote-aware mutations
-   * =========================== */
-
-  // ✅ NEW: awaitable save that returns success/failure to UI
-  const saveLot = async (lot: Lot): Promise<SaveLotResult> => {
-    const normalized = normalizeLotForStore(lot);
-    if (!normalized) return { ok: false, error: "Invalid lot payload (missing id)" };
-
-    // optimistic local (so UI updates instantly)
-    setLots((prev) => {
-      const without = prev.filter((l) => normalizeId(l.id) !== normalizeId(normalized.id));
-      return [normalized, ...without];
+    if (!prefsReady) return;
+    void Promise.all([
+      storageSet(MODE_KEY, mode),
+      storageSet(LANG_KEY, lang),
+      storageSet(THEME_KEY, themeName),
+    ]).catch((error) => {
+      console.warn("[Lots preferences]", errorMessage(error));
     });
+  }, [prefsReady, mode, lang, themeName]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!proofKey) {
+      setProofsReady(true);
+      return;
+    }
+
+    void storageGet(proofKey)
+      .then((raw) => {
+        if (!cancelled) setProofs(parseProofs(raw));
+      })
+      .catch((error) => {
+        console.warn("[Lot proofs]", errorMessage(error));
+      })
+      .finally(() => {
+        if (!cancelled) setProofsReady(true);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [proofKey]);
+
+  useEffect(() => {
+    if (!proofKey || !proofsReady) return;
+    const serialized = JSON.stringify(proofs);
+    proofWrites.current = proofWrites.current
+      .then(() => storageSet(proofKey, serialized))
+      .catch((error) => {
+        console.warn("[Lot proofs]", errorMessage(error));
+      });
+  }, [proofKey, proofsReady, proofs]);
+
+  const checkAccess = async (operation: "create" | "update") => {
+    const allowed =
+      operation === "create"
+        ? permissionsRef.current.canCreate
+        : permissionsRef.current.canUpdate;
+
+    if (!mounted.current || !userId || !organizationId || !allowed) {
+      throw new Error("You do not have permission for this lot operation.");
+    }
+
+    const { data, error } = await supabase.auth.getUser();
+    if (error) throw error;
+    if (!mounted.current || data.user?.id !== userId) {
+      throw new Error("Your session changed. Please retry.");
+    }
+
+    const stillAllowed =
+      operation === "create"
+        ? permissionsRef.current.canCreate
+        : permissionsRef.current.canUpdate;
+    if (!stillAllowed) throw new Error("Your permissions changed.");
+  };
+
+  const applyConfirmedLot = (lot: OrganizationLot) => {
+    if (!mounted.current || lot.organization_id !== organizationId) return;
+    requestVersion.current += 1;
+    const next = [
+      lot,
+      ...lotsRef.current.filter((item) => item.id !== lot.id),
+    ].sort(
+      (a, b) =>
+        (b.createdAt ?? 0) - (a.createdAt ?? 0) ||
+        a.id.localeCompare(b.id)
+    );
+    lotsRef.current = next;
+    setLots(next);
+    setIsLoadingLots(false);
+    setLotsError(null);
+  };
+
+  const saveLot = async (lot: Lot): Promise<SaveLotResult> => {
+    if (mutationBusy.current) {
+      return { ok: false, error: "Another lot operation is in progress." };
+    }
+    mutationBusy.current = true;
 
     try {
-      const deletedSet = deletedDemoIdsRef.current ?? new Set<string>();
+      await checkAccess("create");
+      if (
+        lot.organization_id !== organizationId ||
+        !lot.harvest_id?.trim()
+      ) {
+        throw new Error("A harvest from the active organization is required.");
+      }
 
-      const withUploaded = await uploadLotPhotosIfNeeded(normalized);
+      const photos = await preparePhotos(lot);
+      await checkAccess("create");
 
-      // reflect photo URL changes locally (if any)
-      setLots((prev) =>
-        prev.map((l) =>
-          normalizeId(l.id) === normalizeId(withUploaded.id) ? (withUploaded as any) : l
-        )
+      const saved = await createOrganizationLot({
+        id: lot.id,
+        organization_id: organizationId!,
+        harvest_id: lot.harvest_id,
+        product_en: lot.product_en,
+        product_es: lot.product_es,
+        origin: lot.origin,
+        harvestDate: lot.harvestDate,
+        batch: lot.batch,
+        notes: lot.notes,
+        photos,
+      });
+
+      if (!mounted.current) {
+        return {
+          ok: false,
+          error: "Your session changed. Check the catalog before retrying.",
+        };
+      }
+      applyConfirmedLot(saved);
+      return { ok: true, lot: saved };
+    } catch (error) {
+      return { ok: false, error: errorMessage(error) };
+    } finally {
+      mutationBusy.current = false;
+    }
+  };
+
+  const updateLot = async (
+    id: string,
+    patch: Partial<Lot>
+  ): Promise<SaveLotResult> => {
+    if (mutationBusy.current) {
+      return { ok: false, error: "Another lot operation is in progress." };
+    }
+    mutationBusy.current = true;
+
+    try {
+      await checkAccess("update");
+      const lot = lotsRef.current.find(
+        (item) => normalizeId(item.id) === normalizeId(id)
+      );
+      if (!lot || lot.organization_id !== organizationId) {
+        throw new Error("This lot is unavailable in your organization.");
+      }
+
+      const allowedKeys = new Set([
+        "product_en", "product_es", "origin", "harvestDate",
+        "batch", "notes", "photos", "is_active",
+      ]);
+      if (Object.keys(patch).some((key) => !allowedKeys.has(key))) {
+        throw new Error("The update includes a protected or unsupported field.");
+      }
+
+      const input: UpdateLotInput = {};
+      if (patch.product_en !== undefined) input.product_en = patch.product_en;
+      if (patch.product_es !== undefined) input.product_es = patch.product_es;
+      if (patch.origin !== undefined) input.origin = patch.origin;
+      if (patch.harvestDate !== undefined) input.harvestDate = patch.harvestDate;
+      if (patch.batch !== undefined) input.batch = patch.batch;
+      if (Object.prototype.hasOwnProperty.call(patch, "notes")) {
+        input.notes = patch.notes ?? null;
+      }
+      if (patch.is_active !== undefined) input.is_active = patch.is_active;
+      if (patch.photos !== undefined) {
+        input.photos = await preparePhotos({ ...lot, photos: patch.photos });
+      }
+
+      await checkAccess("update");
+      const saved = await updateOrganizationLot(
+        organizationId!,
+        lot.id,
+        input
       );
 
-      await upsertLotRemote(withUploaded);
-      console.log("[Supabase saveLot/upsert] OK", withUploaded.id);
-
-      // sync to be sure both web/mobile match server truth
-      await syncFromRemote(deletedSet, "saveLot");
-
-      return { ok: true, lot: withUploaded as any };
-    } catch (e) {
-      const msg = errMsg(e) || "Unknown Supabase error while saving lot";
-      console.warn("[Supabase saveLot] failed:", msg);
-      return { ok: false, error: msg };
-    }
-  };
-
-  // keep existing addLot but now it uses saveLot internally
-  const addLot = (lot: Lot) => {
-    (async () => {
-      await saveLot(lot);
-    })();
-  };
-
-  const updateLot = (id: string, patch: Partial<Lot>) => {
-    const lotId = normalizeId(id);
-    if (!lotId) return;
-
-    const { id: _ignored, ...safePatch } = (patch ?? {}) as any;
-
-    let nextLot: Lot | null = null;
-
-    // optimistic local
-    setLots((prev) =>
-      prev.map((l) => {
-        if (normalizeId(l.id) !== lotId) return l;
-        const merged = { ...l, ...safePatch, id: l.id };
-        const normalized = normalizeLotForStore(merged) ?? l;
-        nextLot = normalized;
-        return normalized;
-      })
-    );
-
-    (async () => {
-      try {
-        if (!nextLot) return;
-
-        const deletedSet = deletedDemoIdsRef.current ?? new Set<string>();
-
-        const withUploaded = await uploadLotPhotosIfNeeded(nextLot);
-
-        setLots((prev) =>
-          prev.map((l) => (normalizeId(l.id) === lotId ? (withUploaded as any) : l))
-        );
-
-        await upsertLotRemote(withUploaded);
-        console.log("[Supabase updateLot/upsert] OK", withUploaded.id);
-
-        await syncFromRemote(deletedSet, "updateLot");
-      } catch (e) {
-        console.warn("[Supabase updateLot/upsert] failed:", errMsg(e));
+      if (!mounted.current) {
+        return {
+          ok: false,
+          error: "Your session changed. Check the catalog before retrying.",
+        };
       }
-    })();
+      applyConfirmedLot(saved);
+      return { ok: true, lot: saved };
+    } catch (error) {
+      return { ok: false, error: errorMessage(error) };
+    } finally {
+      mutationBusy.current = false;
+    }
   };
 
-  const deleteLot = (id: string) => {
-    const lotId = normalizeId(id);
-    if (!lotId) return;
+  const deleteLot = async (_id: string): Promise<void> => {
+    throw new Error(
+      "Physical deletion is unavailable in V2. Use lot deactivation instead."
+    );
+  };
 
-    // demo tombstone
-    if (isDemoLotId(lotId)) {
-      setDeletedDemoIds((prev) => {
-        const next = new Set(prev);
-        next.add(lotId);
-        return next;
-      });
-    }
+  const getLotById = (id: string) =>
+    lots.find((lot) => normalizeId(lot.id) === normalizeId(id));
 
-    // optimistic local
-    setLots((prev) => prev.filter((l) => normalizeId(l.id) !== lotId));
-
-    // clear proof local
-    setProofs((prev) => {
-      if (!prev[lotId]) return prev;
-      const next = { ...prev };
-      delete next[lotId];
+  const clearProofForLot = (id: string) => {
+    if (!proofsReady || !mounted.current) return;
+    setProofs((previous) => {
+      const next = { ...previous };
+      delete next[normalizeId(id)];
       return next;
     });
-
-    (async () => {
-      try {
-        const deletedSet = deletedDemoIdsRef.current ?? new Set<string>();
-
-        await deleteLotRemote(lotId);
-        console.log("[Supabase deleteLot] OK", lotId);
-
-        await syncFromRemote(deletedSet, "deleteLot");
-      } catch (e) {
-        console.warn("[Supabase deleteLot] failed:", errMsg(e));
-      }
-    })();
   };
 
-  const getLotById = (id: string) => {
-    const lotId = normalizeId(id);
-    return lots.find((l) => normalizeId(l.id) === lotId);
-  };
-
-  const resetLots = () => {
-    const uid = activeUserIdRef.current;
-
-    setLots(initialLots);
-    storageRemove(cacheKey(STORAGE_BASE_LOTS, uid));
-
-    setProofs({});
-    storageRemove(cacheKey(STORAGE_BASE_PROOFS, uid));
-
-    setDeletedDemoIds(new Set());
-    storageRemove(cacheKey(STORAGE_BASE_DELETED_DEMOS, uid));
-
-    // also clear legacy keys (optional but helps cleanup)
-    storageRemove(STORAGE_BASE_LOTS);
-    storageRemove(STORAGE_BASE_PROOFS);
-    storageRemove(STORAGE_BASE_DELETED_DEMOS);
-  };
-
-  const enterOperatorWithPin = (pin: string) => {
-    if (pin === OPERATOR_PIN) {
+  const value: LotsContextValue = {
+    lots,
+    isLoadingLots,
+    lotsError,
+    refreshLots,
+    saveLot,
+    updateLot,
+    deleteLot,
+    getLotById,
+    addLot: (lot) => {
+      void saveLot(lot).then((result) => {
+        if (!result.ok) console.warn("[addLot]", result.error);
+      });
+    },
+    resetLots: () => {
+      void refreshLots();
+    },
+    mode,
+    enterOperatorWithPin: (pin) => {
+      if (pin !== "1616") return false;
       setMode("operator");
       return true;
-    }
-    return false;
+    },
+    exitToClient: () => setMode("client"),
+    lang,
+    setLang,
+    themeName,
+    setThemeName,
+    proofs,
+    getProofByLotId: (id) => proofs[normalizeId(id)],
+    setProofForLot: (proof) => {
+      if (!proofsReady || !mounted.current || !getLotById(proof.lotId)) return;
+      const id = normalizeId(proof.lotId);
+      setProofs((previous) => ({
+        ...previous,
+        [id]: { ...proof, lotId: id },
+      }));
+    },
+    clearProofForLot,
+    resetProofs: () => {
+      if (proofsReady && mounted.current) setProofs({});
+    },
   };
-
-  const exitToClient = () => setMode("client");
-
-  // proofs helpers
-  const getProofByLotId = (lotId: string) => proofs[normalizeId(lotId)];
-
-  const setProofForLot = (proof: LotProof) => {
-    const lotId = normalizeId(proof?.lotId);
-    if (!lotId) return;
-
-    setProofs((prev) => ({
-      ...prev,
-      [lotId]: {
-        lotId,
-        hash: s(proof.hash),
-        txHash: s(proof.txHash),
-        blockNumber: Number(proof.blockNumber),
-        ts: Number(proof.ts),
-      },
-    }));
-  };
-
-  const clearProofForLot = (lotId: string) => {
-    const id = normalizeId(lotId);
-    if (!id) return;
-
-    setProofs((prev) => {
-      if (!prev[id]) return prev;
-      const next = { ...prev };
-      delete next[id];
-      return next;
-    });
-  };
-
-  const resetProofs = () => {
-    const uid = activeUserIdRef.current;
-    setProofs({});
-    storageRemove(cacheKey(STORAGE_BASE_PROOFS, uid));
-  };
-
-  const value = useMemo(
-    () => ({
-      lots,
-      addLot,
-      saveLot, // ✅ NEW
-      deleteLot,
-      getLotById,
-      resetLots,
-
-      updateLot,
-
-      mode,
-      enterOperatorWithPin,
-      exitToClient,
-
-      lang,
-      setLang,
-
-      themeName,
-      setThemeName,
-
-      proofs,
-      getProofByLotId,
-      setProofForLot,
-      clearProofForLot,
-      resetProofs,
-    }),
-    [lots, mode, lang, themeName, proofs]
-  );
 
   return <LotsContext.Provider value={value}>{children}</LotsContext.Provider>;
 }
 
 export function useLots() {
-  const ctx = useContext(LotsContext);
-  if (!ctx) throw new Error("useLots must be used inside LotsProvider");
-  return ctx;
+  const context = useContext(LotsContext);
+  if (!context) throw new Error("useLots must be used inside LotsProvider");
+  return context;
 }

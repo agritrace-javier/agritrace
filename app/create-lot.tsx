@@ -1,9 +1,8 @@
-// app/create-lot.tsx
-import type { Session } from "@supabase/supabase-js";
 import * as ImagePicker from "expo-image-picker";
-import { useRouter } from "expo-router";
-import { useEffect, useMemo, useState } from "react";
+import { Redirect, useLocalSearchParams, useRouter } from "expo-router";
+import { useEffect, useRef, useState } from "react";
 import {
+  ActivityIndicator,
   Alert,
   Image,
   KeyboardAvoidingView,
@@ -15,322 +14,300 @@ import {
   TextInput,
   View,
 } from "react-native";
+import { useAuth } from "../src/features/auth";
+import {
+  getActiveHarvestsByOrganization,
+  getHarvestById,
+} from "../src/features/harvests/harvestsService";
+import type { Harvest } from "../src/features/harvests/harvestsService";
 import { t as I18N } from "./i18n";
 import { useLots } from "./lots-store";
-import { supabase } from "./supabase";
-import { getTheme } from "./theme";
+import { colors, spacing, radius, typography, layout } from "../src/theme/tokens";
 
-function isValidDateYYYYMMDD(s: string) {
-  return /^\d{4}-\d{2}-\d{2}$/.test(s);
-}
-
-function normalizeText(v: string) {
-  return String(v ?? "").trim();
-}
-
-function makeLotId() {
-  const code = Math.random().toString(36).slice(2, 6).toUpperCase();
-  return `LOT-${code}`;
-}
-
-/**
- * ✅ WEB ONLY:
- * Convert a blob/object URL (or normal URL) to data URL so it persists after refresh.
- */
 async function webUriToDataUrl(uri: string): Promise<string> {
   if (uri.startsWith("data:")) return uri;
+  const response = await fetch(uri);
+  if (!response.ok) throw new Error("Could not read the selected photo.");
+  const blob = await response.blob();
 
-  const res = await fetch(uri);
-  const blob = await res.blob();
-
-  const dataUrl: string = await new Promise((resolve, reject) => {
+  return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onerror = () => reject(new Error("FileReader failed"));
+    reader.onerror = () => reject(new Error("Could not process the photo."));
     reader.onload = () => resolve(String(reader.result ?? ""));
     reader.readAsDataURL(blob);
   });
+}
 
-  return dataUrl;
+function messageOf(error: unknown): string {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "message" in error &&
+    typeof error.message === "string"
+  ) {
+    return error.message;
+  }
+  return "Could not complete the operation.";
 }
 
 export default function CreateLotScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams<{ harvestId?: string | string[] }>();
+  const requestedHarvestId =
+    typeof params.harvestId === "string" ? params.harvestId : null;
 
-  const { saveLot, getLotById, lang, themeName } = useLots();
+  const {
+    user,
+    organization,
+    isLoading,
+    isAuthenticated,
+    hasActiveMembership,
+    can,
+  } = useAuth();
+  const { saveLot, lang } = useLots();
   const tt = I18N[lang];
+  const es = lang === "es";
+  const c = {
+    muted: colors.light.textSecondary,
+    red: colors.light.error,
+    green: colors.brand.primary,
+  };
 
-  const theme = useMemo(() => getTheme(themeName), [themeName]);
-  const c = theme.colors;
-  const styles = useMemo(() => makeStyles(c), [c]);
+  const allowed = hasActiveMembership && can("lots.create");
+  const organizationId = organization?.id;
+  const scope =
+    user && organizationId && allowed
+      ? `${user.id}:${organizationId}`
+      : null;
 
-  // ✅ ALL hooks must be declared BEFORE any conditional return
-  const [session, setSession] = useState<Session | null>(null);
-  const [authReady, setAuthReady] = useState(false);
-
+  const [harvestData, setHarvestData] = useState<{
+    scope: string;
+    items: Harvest[];
+  } | null>(null);
+  const [loadError, setLoadError] = useState<{
+    scope: string;
+    message: string;
+  } | null>(null);
+  const [reload, setReload] = useState(0);
+  const [selectedId, setSelectedId] = useState("");
   const [productEn, setProductEn] = useState("");
   const [productEs, setProductEs] = useState("");
   const [origin, setOrigin] = useState("");
-  const [harvestDate, setHarvestDate] = useState("");
   const [batch, setBatch] = useState("");
   const [notes, setNotes] = useState("");
-
   const [photoUris, setPhotoUris] = useState<string[]>([]);
   const [busyPhotos, setBusyPhotos] = useState(false);
   const [busySave, setBusySave] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
 
-  const isAuthed = !!session?.user?.id;
+  const aliveRef = useRef(false);
+  const scopeRef = useRef(scope);
+  const operationRef = useRef(false);
+  const pendingLotIdRef = useRef<string | null>(null);
+  scopeRef.current = scope;
 
-  const ui = useMemo(() => {
-    if (lang === "es") {
-      return {
-        photosTitle: "Fotos del producto",
-        photosSub: "Sube fotos del producto para que el cliente vea evidencia del lote.",
-        upload: "Subir fotos",
-        remove: "Quitar",
-        max5: "Máximo 5 fotos (demo).",
-        permDenied: "Permiso denegado. Activa acceso a Fotos en Settings y vuelve a intentar.",
-        pickFailed: "No se pudieron seleccionar fotos.",
-        needLoginTitle: "Necesitas iniciar sesión",
-        needLoginBody: "Inicia sesión para crear y guardar lotes.",
-        ok: "OK",
-        productEnLabel: "Producto (EN)",
-        productEsLabel: "Producto (ES)",
-        productHintEn: "ej. Papaya",
-        productHintEs: "ej. Papaya",
-        originHint: "ej. Santa Ana, El Salvador",
-        batchHint: "ej. BATCH-A1",
-        dateHint: "YYYY-MM-DD",
-        converting: "Procesando fotos…",
-        loadingSession: "Cargando sesión…",
-        saving: "Guardando…",
-        savedTitle: "Guardado",
-        savedBody: "Lote creado:",
-        saveErrTitle: "No se pudo guardar",
-      };
-    }
-    return {
-      photosTitle: "Product photos",
-      photosSub: "Upload photos so clients can see evidence for this lot/batch.",
-      upload: "Upload photos",
-      remove: "Remove",
-      max5: "Max 5 photos (demo).",
-      permDenied: "Permission denied. Enable Photos access in Settings and try again.",
-      pickFailed: "Could not pick photos.",
-      needLoginTitle: "Login required",
-      needLoginBody: "Please log in to create and save lots.",
-      ok: "OK",
-      productEnLabel: "Product (EN)",
-      productEsLabel: "Product (ES)",
-      productHintEn: "e.g. Papaya",
-      productHintEs: "e.g. Papaya",
-      originHint: "e.g. Santa Ana, El Salvador",
-      batchHint: "e.g. BATCH-A1",
-      dateHint: "YYYY-MM-DD",
-      converting: "Processing photos…",
-      loadingSession: "Loading session…",
-      saving: "Saving…",
-      savedTitle: "Saved",
-      savedBody: "Lot created:",
-      saveErrTitle: "Could not save",
-    };
-  }, [lang]);
-
-  // ✅ Load session once + keep in sync
   useEffect(() => {
-    let mounted = true;
-
-    (async () => {
-      try {
-        const { data } = await supabase.auth.getSession();
-        if (!mounted) return;
-        setSession(data.session ?? null);
-      } finally {
-        if (mounted) setAuthReady(true);
-      }
-    })();
-
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => {
-      setSession(s);
-      setAuthReady(true);
-    });
-
+    aliveRef.current = true;
     return () => {
-      mounted = false;
-      sub.subscription.unsubscribe();
+      aliveRef.current = false;
     };
   }, []);
 
-  // ✅ Redirect only after we know auth state
   useEffect(() => {
-    if (!authReady) return;
-    if (!isAuthed) {
-      if (Platform.OS !== "web") {
-        Alert.alert("AgriTrace", ui.needLoginBody, [{ text: ui.ok }]);
-      }
-      router.replace("/login");
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authReady, isAuthed, router]);
+    if (!scope || !organizationId) return;
+    const requestScope = scope;
+    const requestOrganizationId = organizationId;
+    let cancelled = false;
 
-  const handleBack = () => {
-    router.replace("/catalog");
-  };
+    setHarvestData(null);
+    setLoadError(null);
+    setSelectedId("");
 
-  const requestPhotoPermissionIfNeeded = async () => {
-    if (Platform.OS === "web") return true;
+    void getActiveHarvestsByOrganization(requestOrganizationId)
+      .then((items) => {
+        if (cancelled) return;
+        setHarvestData({ scope: requestScope, items });
+        if (requestedHarvestId) {
+          const match = items.find((item) => item.id === requestedHarvestId);
+          if (match) setSelectedId(match.id);
+        } else if (items.length === 1) {
+          setSelectedId(items[0].id);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setLoadError({ scope: requestScope, message: messageOf(error) });
+        }
+      });
 
-    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (status !== "granted") {
-      Alert.alert("AgriTrace", ui.permDenied);
-      return false;
-    }
-    return true;
-  };
+    return () => {
+      cancelled = true;
+    };
+  }, [scope, organizationId, requestedHarvestId, reload]);
 
-  const onPickPhotos = async () => {
+  const currentData = harvestData?.scope === scope ? harvestData : null;
+  const currentError = loadError?.scope === scope ? loadError.message : null;
+  const selected = currentData?.items.find((item) => item.id === selectedId);
+
+  const pickPhotos = async () => {
+    if (operationRef.current || !scope || photoUris.length >= 5) return;
+    const requestScope = scope;
+    operationRef.current = true;
+    setBusyPhotos(true);
+    setFormError(null);
+
     try {
-      const ok = await requestPhotoPermissionIfNeeded();
-      if (!ok) return;
+      if (Platform.OS !== "web") {
+        const permission =
+          await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (permission.status !== "granted") {
+          throw new Error(
+            es ? "Activa el permiso de acceso a fotos." : "Enable photo access."
+          );
+        }
+      }
 
-      const remaining = Math.max(0, 5 - photoUris.length);
-      if (remaining <= 0) return;
-
-      const res = await ImagePicker.launchImageLibraryAsync({
+      const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
         quality: 0.85,
         allowsEditing: false,
-        allowsMultipleSelection: true as any,
-        selectionLimit: remaining as any,
+        allowsMultipleSelection: true,
+        selectionLimit: 5 - photoUris.length,
       });
+      if (result.canceled) return;
 
-      if (res.canceled) return;
+      const picked = result.assets.map((asset) => asset.uri).filter(Boolean);
+      const photos =
+        Platform.OS === "web"
+          ? await Promise.all(picked.map(webUriToDataUrl))
+          : picked;
 
-      const picked = (res.assets ?? [])
-        .map((a) => a?.uri)
-        .filter((u): u is string => !!u);
-
-      if (picked.length === 0) return;
-
-      // ✅ WEB: convert picked uris to data URLs so they survive refresh
-      if (Platform.OS === "web") {
-        setBusyPhotos(true);
-        try {
-          const converted: string[] = [];
-          for (const uri of picked) {
-            const dataUrl = await webUriToDataUrl(uri);
-            if (dataUrl) converted.push(dataUrl);
-          }
-
-          setPhotoUris((prev) => {
-            const next = [...prev, ...converted];
-            return next.slice(0, 5);
-          });
-        } finally {
-          setBusyPhotos(false);
-        }
-        return;
+      if (aliveRef.current && scopeRef.current === requestScope) {
+        setPhotoUris((previous) =>
+          Array.from(new Set([...previous, ...photos])).slice(0, 5)
+        );
       }
-
-      // ✅ Native: keep file uri
-      setPhotoUris((prev) => {
-        const next = [...prev, ...picked];
-        return next.slice(0, 5);
-      });
-    } catch {
-      setBusyPhotos(false);
-      Alert.alert("AgriTrace", ui.pickFailed);
+    } catch (error) {
+      if (aliveRef.current && scopeRef.current === requestScope) {
+        setFormError(messageOf(error));
+      }
+    } finally {
+      operationRef.current = false;
+      if (aliveRef.current) setBusyPhotos(false);
     }
-  };
-
-  const onRemovePhoto = (uri: string) => {
-    setPhotoUris((prev) => prev.filter((x) => x !== uri));
-  };
-
-  const buildUniqueLotId = () => {
-    for (let i = 0; i < 30; i++) {
-      const id = makeLotId();
-      if (!getLotById(id)) return id;
-    }
-    return `LOT-${Date.now().toString(36).toUpperCase()}`;
   };
 
   const onSave = async () => {
-    if (busyPhotos || busySave) return;
-
-    if (!isAuthed) {
-      Alert.alert("AgriTrace", ui.needLoginBody, [{ text: ui.ok }]);
-      router.replace("/login");
+    if (
+      operationRef.current ||
+      !scope ||
+      !organizationId ||
+      !allowed ||
+      !selected
+    ) {
       return;
     }
 
-    const pe = normalizeText(productEn);
-    const ps = normalizeText(productEs);
-    const o = normalizeText(origin);
-    const h = normalizeText(harvestDate);
-    const b = normalizeText(batch);
-    const n = normalizeText(notes);
-
-    if (!o || !h || !b || (!pe && !ps)) {
-      Alert.alert(tt.missingFields, tt.fillRequired);
+    const pe = productEn.trim();
+    const ps = productEs.trim();
+    const o = origin.trim();
+    const b = batch.trim();
+    if ((!pe && !ps) || !o || !b) {
+      setFormError(
+        es
+          ? "Completa producto, origen y batch."
+          : "Complete product, origin and batch."
+      );
       return;
     }
 
-    if (!isValidDateYYYYMMDD(h)) {
-      Alert.alert(tt.invalidDate, tt.dateFormatHint);
-      return;
-    }
-
-    const finalEn = pe || ps;
-    const finalEs = ps || pe;
-
-    const id = buildUniqueLotId();
-
+    const requestScope = scope;
+    operationRef.current = true;
     setBusySave(true);
+    setFormError(null);
+
     try {
+      const harvest = await getHarvestById(organizationId, selected.id);
+      if (
+        !harvest ||
+        !harvest.is_active ||
+        harvest.organization_id !== organizationId
+      ) {
+        throw new Error(
+          es
+            ? "La cosecha ya no está disponible. Recarga la lista."
+            : "The harvest is no longer available. Reload the list."
+        );
+      }
+      if (!aliveRef.current || scopeRef.current !== requestScope) return;
+
+      const id =
+        pendingLotIdRef.current ??
+        `LOT-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+          .toUpperCase();
+      pendingLotIdRef.current = id;
+
       const result = await saveLot({
         id,
-        product_en: finalEn,
-        product_es: finalEs,
+        organization_id: organizationId,
+        harvest_id: harvest.id,
+        product_en: pe || ps,
+        product_es: ps || pe,
         origin: o,
-        harvestDate: h,
+        harvestDate: harvest.harvest_date,
         batch: b,
-        notes: n || undefined,
-        photos: photoUris.slice(0, 5),
-        createdAt: Date.now(),
-      } as any);
+        notes: notes.trim() || undefined,
+        photos: photoUris,
+      });
 
+      if (!aliveRef.current || scopeRef.current !== requestScope) return;
       if (!result.ok) {
-        Alert.alert(ui.saveErrTitle, result.error);
+        setFormError(result.error);
         return;
       }
 
-      // ✅ Only show saved if Supabase confirmed
       if (Platform.OS === "web") {
-        // @ts-ignore
-        globalThis?.alert?.(`${ui.savedTitle}: ${result.lot.id}`);
+        const browser = globalThis as unknown as {
+          alert?: (message: string) => void;
+        };
+        browser.alert?.(
+          `${es ? "Lote creado" : "Lot created"}: ${result.lot.id}`
+        );
       } else {
-        Alert.alert(ui.savedTitle, `${ui.savedBody} ${result.lot.id}`);
+        Alert.alert(es ? "Lote creado" : "Lot created", result.lot.id);
       }
-
       router.replace("/catalog");
+    } catch (error) {
+      if (aliveRef.current && scopeRef.current === requestScope) {
+        setFormError(messageOf(error));
+      }
     } finally {
-      setBusySave(false);
+      operationRef.current = false;
+      if (aliveRef.current) setBusySave(false);
     }
   };
 
-  // ✅ Render states (no early return before hooks)
-  if (!authReady) {
+  if (isLoading) {
+    return <View style={styles.page}><ActivityIndicator /></View>;
+  }
+  if (!isAuthenticated) return <Redirect href="/login" />;
+  if (!hasActiveMembership || !organization) {
+    return <Redirect href="/organization-setup" />;
+  }
+  if (!allowed) {
     return (
-      <View style={[styles.page, { alignItems: "center", justifyContent: "center" }]}>
-        <Text style={{ color: c.muted, fontWeight: "800" }}>{ui.loadingSession}</Text>
+      <View style={styles.page}>
+        <Text style={styles.sub}>
+          {es ? "No tienes permiso para crear lotes." : "You cannot create lots."}
+        </Text>
+        <Pressable onPress={() => router.replace("/catalog")} style={styles.backBtn}>
+          <Text style={styles.backBtnText}>{tt.back}</Text>
+        </Pressable>
       </View>
     );
   }
 
-  if (!isAuthed) {
-    // redirect is handled by effect; keep screen blank to avoid flicker
-    return <View style={styles.page} />;
-  }
+  const busy = busyPhotos || busySave;
 
   return (
     <KeyboardAvoidingView
@@ -340,135 +317,161 @@ export default function CreateLotScreen() {
     >
       <View style={styles.headerRow}>
         <Pressable
-          onPress={handleBack}
-          style={({ pressed }) => [styles.backBtn, pressed && styles.pressed]}
+          accessibilityRole="button"
+          disabled={busy}
+          onPress={() => router.replace("/catalog")}
+          style={styles.backBtn}
         >
-          <Text style={styles.backBtnText}>← {tt.back}</Text>
+          <Text style={styles.backBtnText}>{tt.back}</Text>
         </Pressable>
       </View>
 
       <ScrollView
         contentContainerStyle={styles.content}
-        showsVerticalScrollIndicator={true}
         keyboardShouldPersistTaps="handled"
       >
-        <Text style={styles.title}>{tt.createLotTitle}</Text>
-        <Text style={styles.sub}>{tt.createLotSub}</Text>
+        <Text style={styles.eyebrow}>
+          {es ? "GESTIÓN DE LOTES" : "LOT MANAGEMENT"}
+        </Text>
+        <Text style={styles.title}>{es ? "Crear lote" : "Create lot"}</Text>
+        <Text style={styles.description}>
+          {es
+            ? "Registra un lote y vincúlalo a su cosecha de origen."
+            : "Register a lot and link it to its source harvest."}
+        </Text>
+        <Text style={styles.sub}>{organization.name}</Text>
+        <Text style={styles.label}>
+          {es ? "Cosecha de origen" : "Source harvest"}
+        </Text>
 
-        <Text style={styles.label}>{ui.productEnLabel}</Text>
+        {currentError ? (
+          <View>
+            <Text accessibilityRole="alert" style={[styles.sub, { color: c.red }]}>
+              {currentError}
+            </Text>
+            <Pressable onPress={() => setReload((value) => value + 1)} style={styles.backBtn}>
+              <Text style={styles.backBtnText}>{es ? "Reintentar" : "Retry"}</Text>
+            </Pressable>
+          </View>
+        ) : !currentData ? (
+          <ActivityIndicator />
+        ) : currentData.items.length === 0 ? (
+          <Text style={styles.sub}>
+            {es
+              ? "Primero registra una cosecha activa para esta organización."
+              : "Register an active harvest for this organization first."}
+          </Text>
+        ) : (
+          currentData.items.map((harvest) => (
+            <Pressable
+              key={harvest.id}
+              accessibilityRole="radio"
+              accessibilityState={{ checked: selectedId === harvest.id }}
+              disabled={busy}
+              onPress={() => setSelectedId(harvest.id)}
+              style={[
+                styles.input,
+                selectedId === harvest.id ? { borderColor: c.green, borderWidth: 2 } : null,
+              ]}
+            >
+              <Text style={styles.backBtnText}>{harvest.name}</Text>
+              <Text style={styles.sub}>
+                {harvest.harvest_date} · {harvest.quantity} {harvest.unit}
+                {"\n"}ID: {harvest.id}
+              </Text>
+            </Pressable>
+          ))
+        )}
+
+        {selected ? (
+          <Text style={styles.sub}>
+            {tt.harvestDate}: {selected.harvest_date}
+          </Text>
+        ) : null}
+
+        <Text style={styles.label}>Producto / Product (EN)</Text>
         <TextInput
-          value={productEn}
-          onChangeText={setProductEn}
-          placeholder={ui.productHintEn}
-          placeholderTextColor={c.muted}
-          style={styles.input}
+          value={productEn} onChangeText={setProductEn}
+          editable={!busy} style={styles.input}
+          placeholder="Coffee Beans" placeholderTextColor={c.muted}
         />
-
-        <Text style={styles.label}>{ui.productEsLabel}</Text>
+        <Text style={styles.label}>Producto / Product (ES)</Text>
         <TextInput
-          value={productEs}
-          onChangeText={setProductEs}
-          placeholder={ui.productHintEs}
-          placeholderTextColor={c.muted}
-          style={styles.input}
+          value={productEs} onChangeText={setProductEs}
+          editable={!busy} style={styles.input}
+          placeholder="Granos de café" placeholderTextColor={c.muted}
         />
-
         <Text style={styles.label}>{tt.origin}</Text>
         <TextInput
-          value={origin}
-          onChangeText={setOrigin}
-          placeholder={ui.originHint}
-          placeholderTextColor={c.muted}
-          style={styles.input}
+          value={origin} onChangeText={setOrigin}
+          editable={!busy} style={styles.input}
+          placeholder="Santa Ana, El Salvador" placeholderTextColor={c.muted}
         />
-
-        <Text style={styles.label}>{tt.harvestDate}</Text>
-        <TextInput
-          value={harvestDate}
-          onChangeText={setHarvestDate}
-          placeholder={ui.dateHint}
-          placeholderTextColor={c.muted}
-          autoCapitalize="none"
-          style={styles.input}
-        />
-
         <Text style={styles.label}>{tt.batch}</Text>
         <TextInput
-          value={batch}
-          onChangeText={setBatch}
-          placeholder={ui.batchHint}
+          value={batch} onChangeText={setBatch}
+          editable={!busy} style={styles.input}
+          autoCapitalize="none" placeholder="BATCH-A1"
           placeholderTextColor={c.muted}
-          autoCapitalize="none"
-          style={styles.input}
         />
-
         <Text style={styles.label}>{tt.notesOptional}</Text>
         <TextInput
-          value={notes}
-          onChangeText={setNotes}
-          placeholder={lang === "es" ? "Opcional" : "Optional"}
-          placeholderTextColor={c.muted}
+          value={notes} onChangeText={setNotes}
+          editable={!busy} multiline
           style={[styles.input, styles.notes]}
-          multiline
         />
 
         <View style={styles.photosBox}>
-          <Text style={styles.photosTitle}>{ui.photosTitle}</Text>
-          <Text style={styles.photosSub}>
-            {ui.photosSub} {ui.max5}
+          <Text style={styles.photosTitle}>
+            {es ? "Fotos del producto" : "Product photos"} ({photoUris.length}/5)
           </Text>
-
-          <View style={styles.photosActions}>
-            <Pressable
-              onPress={onPickPhotos}
-              style={({ pressed }) => [
-                styles.photoBtn,
-                pressed && styles.pressed,
-                (photoUris.length >= 5 || busyPhotos || busySave) && styles.disabled,
-              ]}
-              disabled={photoUris.length >= 5 || busyPhotos || busySave}
-            >
-              <Text style={styles.photoBtnText}>
-                {busyPhotos ? ui.converting : ui.upload}
-              </Text>
-            </Pressable>
-
-            <Text style={styles.photosCount}>{photoUris.length}/5</Text>
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => void pickPhotos()}
+            disabled={busy || photoUris.length >= 5}
+            style={[styles.photoBtn, busy ? styles.disabled : null]}
+          >
+            <Text style={styles.photoBtnText}>
+              {busyPhotos
+                ? es ? "Procesando..." : "Processing..."
+                : es ? "Subir fotos" : "Upload photos"}
+            </Text>
+          </Pressable>
+          <View style={styles.photosRow}>
+            {photoUris.map((uri) => (
+              <View key={uri} style={styles.photoCard}>
+                <Image source={{ uri }} style={styles.photoThumb} />
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={busy}
+                  onPress={() => setPhotoUris((previous) =>
+                    previous.filter((item) => item !== uri))}
+                  style={styles.removeBtn}
+                >
+                  <Text style={styles.removeBtnText}>{es ? "Quitar" : "Remove"}</Text>
+                </Pressable>
+              </View>
+            ))}
           </View>
-
-          {photoUris.length > 0 ? (
-            <View style={styles.photosRow}>
-              {photoUris.map((uri) => (
-                <View key={uri} style={styles.photoCard}>
-                  <Image source={{ uri }} style={styles.photoThumb} />
-                  <Pressable
-                    onPress={() => onRemovePhoto(uri)}
-                    style={({ pressed }) => [
-                      styles.removeBtn,
-                      pressed && styles.pressed,
-                      busySave && styles.disabled,
-                    ]}
-                    disabled={busySave}
-                  >
-                    <Text style={styles.removeBtnText}>{ui.remove}</Text>
-                  </Pressable>
-                </View>
-              ))}
-            </View>
-          ) : null}
         </View>
 
+        {formError ? (
+          <Text accessibilityRole="alert" style={[styles.sub, { color: c.red }]}>
+            {formError}
+          </Text>
+        ) : null}
+
         <Pressable
-          onPress={onSave}
-          style={({ pressed }) => [
+          accessibilityRole="button"
+          onPress={() => void onSave()}
+          disabled={busy || !selected}
+          style={[
             styles.saveBtn,
-            pressed && styles.pressed,
-            (busyPhotos || busySave) && styles.disabled,
+            busy || !selected ? styles.disabled : null,
           ]}
-          disabled={busyPhotos || busySave}
         >
           <Text style={styles.saveBtnText}>
-            {busySave ? ui.saving : tt.saveLot}
+            {busySave ? es ? "Guardando..." : "Saving..." : tt.saveLot}
           </Text>
         </Pressable>
       </ScrollView>
@@ -476,164 +479,164 @@ export default function CreateLotScreen() {
   );
 }
 
-type ThemeColors = ReturnType<typeof getTheme>["colors"];
-const makeStyles = (c: ThemeColors) =>
-  StyleSheet.create({
-    page: { flex: 1, backgroundColor: c.bg, padding: 20 },
 
-    headerRow: {
-      flexDirection: "row",
-      justifyContent: "space-between",
-      alignItems: "center",
-      marginBottom: 14,
-    },
-    backBtn: {
-      backgroundColor: c.card,
-      borderColor: c.border,
-      borderWidth: 1,
-      paddingVertical: 10,
-      paddingHorizontal: 14,
-      borderRadius: 999,
-      ...(Platform.OS === "web" ? ({ cursor: "pointer" } as any) : null),
-    },
-    backBtnText: { color: c.text, fontWeight: "900", letterSpacing: 0.6 },
-    pressed: { opacity: 0.9, transform: [{ scale: 0.99 }] },
-    disabled: { opacity: 0.55 },
-
-    content: { paddingBottom: 40 },
-
-    title: {
-      color: c.text,
-      fontSize: 34,
-      fontWeight: "900",
-      letterSpacing: 1,
-      marginTop: 2,
-    },
-    sub: {
-      color: c.muted,
-      marginTop: 6,
-      marginBottom: 12,
-      fontSize: 13,
-      letterSpacing: 0.3,
-    },
-
-    label: {
-      marginTop: 10,
-      color: c.text,
-      fontWeight: "900",
-      letterSpacing: 0.4,
-      fontSize: 12,
-    },
-    input: {
-      marginTop: 6,
-      borderWidth: 1,
-      borderColor: c.border,
-      backgroundColor: c.card,
-      color: c.text,
-      borderRadius: 14,
-      paddingVertical: 12,
-      paddingHorizontal: 12,
-      fontSize: 14,
-      letterSpacing: 0.3,
-    },
-    notes: { minHeight: 90, textAlignVertical: "top" },
-
-    photosBox: {
-      marginTop: 14,
-      borderWidth: 1,
-      borderColor: c.border,
-      backgroundColor: c.card,
-      borderRadius: 14,
-      padding: 12,
-    },
-    photosTitle: {
-      color: c.text,
-      fontWeight: "900",
-      letterSpacing: 0.4,
-      fontSize: 13,
-    },
-    photosSub: {
-      marginTop: 6,
-      color: c.muted,
-      fontWeight: "700",
-      letterSpacing: 0.2,
-      lineHeight: 18,
-    },
-    photosActions: {
-      marginTop: 10,
-      flexDirection: "row",
-      alignItems: "center",
-      justifyContent: "space-between",
-      gap: 10,
-      flexWrap: "wrap",
-    },
-    photoBtn: {
-      backgroundColor: c.segmentBg,
-      borderWidth: 1,
-      borderColor: c.border,
-      paddingVertical: 10,
-      paddingHorizontal: 12,
-      borderRadius: 999,
-      ...(Platform.OS === "web" ? ({ cursor: "pointer" } as any) : null),
-    },
-    photoBtnText: {
-      color: c.text,
-      fontWeight: "900",
-      letterSpacing: 0.4,
-      fontSize: 12,
-    },
-    photosCount: {
-      color: c.muted,
-      fontWeight: "900",
-      letterSpacing: 0.2,
-      fontSize: 12,
-    },
-    photosRow: {
-      marginTop: 12,
-      flexDirection: "row",
-      gap: 10,
-      flexWrap: "wrap",
-    },
-    photoCard: {
-      width: 140,
-      borderRadius: 12,
-      overflow: "hidden",
-      borderWidth: 1,
-      borderColor: c.border,
-      backgroundColor: c.segmentBg,
-    },
-    photoThumb: { width: "100%", height: 120, resizeMode: "cover" },
-    removeBtn: {
-      paddingVertical: 8,
-      paddingHorizontal: 10,
-      borderTopWidth: 1,
-      borderTopColor: c.border,
-      backgroundColor: c.card,
-      alignItems: "center",
-      ...(Platform.OS === "web" ? ({ cursor: "pointer" } as any) : null),
-    },
-    removeBtnText: {
-      color: c.text,
-      fontWeight: "900",
-      letterSpacing: 0.3,
-      fontSize: 12,
-    },
-
-    saveBtn: {
-      marginTop: 16,
-      backgroundColor: c.green,
-      borderColor: c.green,
-      borderWidth: 1,
-      paddingVertical: 12,
-      paddingHorizontal: 14,
-      borderRadius: 14,
-      alignItems: "center",
-      ...(Platform.OS === "web" ? ({ cursor: "pointer" } as any) : null),
-    },
-    saveBtnText: {
-      color: "white",
-      fontWeight: "900",
-      letterSpacing: 0.6,
-      fontSize: 14,
-    },
-  });
+const styles = StyleSheet.create({
+  page: {
+    flex: 1,
+    backgroundColor: colors.light.background,
+  },
+  headerRow: {
+    width: "100%",
+    maxWidth: layout.maxContentWidth,
+    alignSelf: "center",
+    paddingHorizontal: layout.screenPadding,
+    paddingTop: spacing.xl,
+    paddingBottom: spacing.md,
+    flexDirection: "row",
+  },
+  content: {
+    width: "100%",
+    maxWidth: layout.maxContentWidth,
+    alignSelf: "center",
+    paddingHorizontal: layout.screenPadding,
+    paddingBottom: spacing.xxl,
+  },
+  eyebrow: {
+    color: colors.brand.primary,
+    fontSize: typography.size.xs,
+    fontWeight: typography.weight.bold,
+    letterSpacing: 2,
+    marginBottom: spacing.sm,
+  },
+  title: {
+    color: colors.light.text,
+    fontSize: typography.size.xxl,
+    fontWeight: typography.weight.extraBold,
+  },
+  description: {
+    color: colors.light.textSecondary,
+    fontSize: typography.size.md,
+    lineHeight: 25,
+    marginTop: spacing.sm,
+  },
+  sub: {
+    color: colors.light.textSecondary,
+    fontSize: typography.size.sm,
+    lineHeight: 23,
+    marginTop: spacing.sm,
+    marginBottom: spacing.md,
+  },
+  label: {
+    color: colors.light.text,
+    fontSize: typography.size.sm,
+    fontWeight: typography.weight.semibold,
+    marginTop: spacing.lg,
+    marginBottom: spacing.sm,
+  },
+  input: {
+    minHeight: 50,
+    borderWidth: 1,
+    borderColor: colors.light.border,
+    backgroundColor: colors.light.surface,
+    color: colors.light.text,
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.md,
+    fontSize: typography.size.md,
+    marginBottom: spacing.sm,
+  },
+  notes: {
+    minHeight: 120,
+    textAlignVertical: "top",
+  },
+  backBtn: {
+    minHeight: 48,
+    justifyContent: "center",
+    paddingHorizontal: spacing.md,
+    borderWidth: 1,
+    borderColor: colors.light.border,
+    borderRadius: radius.md,
+    backgroundColor: colors.light.surface,
+  },
+  backBtnText: {
+    color: colors.brand.primary,
+    fontSize: typography.size.sm,
+    fontWeight: typography.weight.semibold,
+  },
+  photosBox: {
+    marginTop: spacing.lg,
+    marginBottom: spacing.md,
+    borderWidth: 1,
+    borderColor: colors.light.border,
+    borderRadius: radius.lg,
+    backgroundColor: colors.light.surface,
+    padding: spacing.lg,
+    gap: spacing.md,
+  },
+  photosTitle: {
+    color: colors.light.text,
+    fontSize: typography.size.lg,
+    fontWeight: typography.weight.bold,
+  },
+  photoBtn: {
+    minHeight: 48,
+    alignSelf: "flex-start",
+    justifyContent: "center",
+    paddingHorizontal: spacing.md,
+    borderWidth: 1,
+    borderColor: colors.brand.primary,
+    borderRadius: radius.md,
+    backgroundColor: colors.brand.primaryLight,
+  },
+  photoBtnText: {
+    color: colors.brand.primary,
+    fontSize: typography.size.sm,
+    fontWeight: typography.weight.semibold,
+  },
+  photosRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: spacing.md,
+  },
+  photoCard: {
+    width: 140,
+    borderWidth: 1,
+    borderColor: colors.light.border,
+    borderRadius: radius.md,
+    overflow: "hidden",
+  },
+  photoThumb: {
+    width: "100%",
+    height: 120,
+    resizeMode: "cover",
+  },
+  removeBtn: {
+    minHeight: 48,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.light.surfaceSecondary,
+  },
+  removeBtnText: {
+    color: colors.light.textSecondary,
+    fontSize: typography.size.sm,
+    fontWeight: typography.weight.semibold,
+  },
+  saveBtn: {
+    minHeight: 52,
+    marginTop: spacing.md,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+    backgroundColor: colors.brand.primary,
+    borderRadius: radius.md,
+  },
+  saveBtnText: {
+    color: colors.light.surface,
+    fontSize: typography.size.md,
+    fontWeight: typography.weight.bold,
+  },
+  disabled: {
+    opacity: 0.5,
+  },
+});

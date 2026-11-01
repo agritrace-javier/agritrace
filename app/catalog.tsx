@@ -1,310 +1,245 @@
-// app/catalog.tsx
-import { useRouter } from "expo-router";
-import { useEffect, useMemo, useState } from "react";
+import { Redirect, useRouter } from "expo-router";
+import { useEffect, useRef, useState } from "react";
 import {
-    Alert,
-    Image,
-    Platform,
-    Pressable,
-    ScrollView,
-    StyleSheet,
-    Text,
-    View,
+  ActivityIndicator,
+  Alert,
+  Image,
+  Platform,
+  Pressable,
+  ScrollView,
+  Text,
+  View,
+  StyleSheet,
 } from "react-native";
+import { useAuth } from "../src/features/auth";
 import { computeLotHash } from "./hash";
-import type { Lang } from "./i18n";
 import { t as I18N } from "./i18n";
-import type { Lot } from "./lots";
 import { getProductLabel } from "./lots";
+import type { Lot } from "./lots";
 import { useLots } from "./lots-store";
 import { getLotThumbnail } from "./product-photos";
-import { getTheme } from "./theme";
+import { colors, spacing, radius, typography, layout } from "../src/theme/tokens";
 
-type TT = (typeof I18N)[Lang];
 type VerifyState = "not_verified" | "verified" | "tampered" | "checking";
 
-function safeString(v: any) {
-  return String(v ?? "").trim();
-}
-
-// ✅ RN Web event helper (best effort)
-function stopEvt(e: any) {
-  try {
-    e?.preventDefault?.();
-  } catch {}
-  try {
-    e?.stopPropagation?.();
-  } catch {}
+function stopEvt(event: {
+  preventDefault?: () => void;
+  stopPropagation?: () => void;
+}) {
+  event.preventDefault?.();
+  event.stopPropagation?.();
 }
 
 export default function CatalogScreen() {
   const router = useRouter();
-
+  const {
+    isLoading,
+    isAuthenticated,
+    hasActiveMembership,
+    organization,
+    can,
+  } = useAuth();
   const {
     lots,
-    deleteLot,
-    mode,
+    updateLot,
+    isLoadingLots,
+    lotsError,
+    refreshLots,
     lang,
-    themeName,
-
     proofs,
-    getProofByLotId,
     clearProofForLot,
   } = useLots();
 
-  const tt: TT = I18N[lang];
-
-  const theme = useMemo(() => getTheme(themeName), [themeName]);
-  const c = theme.colors;
-  const styles = useMemo(() => makeStyles(c), [c]);
-
-  const isOperator = mode === "operator";
-
-  const v = useMemo(() => {
-    if (lang === "es") {
-      return {
-        verified: "Verificado",
-        notVerified: "No verificado",
-        tampered: "Alterado",
-        checking: "Verificando…",
-
-        clear: "Quitar",
-        clearTitle: "Quitar verificación",
-        clearBody: "Esto borrará el proof guardado para este lote. ¿Seguro?",
-        cancel: "Cancelar",
-        ok: "Sí, quitar",
-        cleared: "Verificación borrada",
-
-        img: "IMG",
-
-        // ✅ delete strings fallback
-        delTitle: "Borrar lote",
-        delBody: "¿Seguro que quieres borrar este lote?",
-        delYes: "Sí, borrar",
-        delNo: "Cancelar",
-        delDone: "Lote borrado",
-      };
-    }
-    return {
-      verified: "Verified",
-      notVerified: "Not Verified",
-      tampered: "Tampered",
-      checking: "Checking…",
-
-      clear: "Clear",
-      clearTitle: "Clear verification",
-      clearBody: "This will delete the saved proof for this lot. Are you sure?",
-      cancel: "Cancel",
-      ok: "Yes, clear",
-      cleared: "Verification cleared",
-
-      img: "IMG",
-
-      // ✅ delete strings fallback
-      delTitle: "Delete lot",
-      delBody: "Are you sure you want to delete this lot?",
-      delYes: "Yes, delete",
-      delNo: "Cancel",
-      delDone: "Lot deleted",
-    };
-  }, [lang]);
-
-  const onOpenLot = (id: string) => {
-    router.push({ pathname: "/lot/[id]", params: { id } } as any);
+  const tt = I18N[lang];
+  const c = {
+    green: colors.brand.primary,
+    red: colors.light.error,
+    yellow: colors.light.warning,
   };
+  const es = lang === "es";
+  const canCreate = hasActiveMembership && can("lots.create");
+  const canUpdate = hasActiveMembership && can("lots.update");
+  const canClearProof = hasActiveMembership && can("verification.perform");
 
-  const onGoCreate = () => {
-    if (!isOperator) return;
-    router.push("/create-lot");
-  };
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [verifyStates, setVerifyStates] =
+    useState<Record<string, VerifyState>>({});
 
-  const onDelete = async (id: string) => {
-    if (!isOperator) return;
-
-    // Prefer your i18n if exists; otherwise fall back
-    const title = (tt as any)?.deleteLotQ || v.delTitle;
-    const bodyBase = (tt as any)?.deleteLotBody || v.delBody;
-    const cancelText = (tt as any)?.cancel || v.delNo;
-    const deleteText = (tt as any)?.delete || v.delYes;
-    const deletedText = (tt as any)?.deleted || v.delDone;
-    const removedFromCatalog = (tt as any)?.removedFromCatalog || "";
-
-    // ✅ WEB: Use native confirm (Alert.alert is unreliable on web)
-    if (Platform.OS === "web") {
-      // @ts-ignore
-      const ok = globalThis?.confirm?.(`${bodyBase}\n\nID: ${id}`) ?? false;
-      if (!ok) return;
-
-      await Promise.resolve(deleteLot(id));
-
-      // optional hygiene
-      try {
-        clearProofForLot(id);
-      } catch {}
-
-      // @ts-ignore
-      globalThis?.alert?.(`${deletedText}: ${id}`);
-      return;
-    }
-
-    // ✅ MOBILE: Alert.alert works well
-    Alert.alert(title, `${bodyBase}\n\nID: ${id}`, [
-      { text: cancelText, style: "cancel" },
-      {
-        text: deleteText,
-        style: "destructive",
-        onPress: async () => {
-          await Promise.resolve(deleteLot(id));
-          try {
-            clearProofForLot(id);
-          } catch {}
-
-          Alert.alert(
-            deletedText,
-            removedFromCatalog ? `${id} ${removedFromCatalog}` : id
-          );
-        },
-      },
-    ]);
-  };
-
-  const onClearVerified = (lotId: string) => {
-    if (!isOperator) return;
-
-    // ✅ WEB: confirm
-    if (Platform.OS === "web") {
-      // @ts-ignore
-      const ok = globalThis?.confirm?.(v.clearBody) ?? false;
-      if (!ok) return;
-      clearProofForLot(lotId);
-      // @ts-ignore
-      globalThis?.alert?.(`${v.cleared}: ${lotId}`);
-      return;
-    }
-
-    // ✅ MOBILE: Alert.alert
-    Alert.alert(v.clearTitle, v.clearBody, [
-      { text: v.cancel, style: "cancel" },
-      {
-        text: v.ok,
-        style: "destructive",
-        onPress: () => {
-          clearProofForLot(lotId);
-          Alert.alert(v.cleared, lotId);
-        },
-      },
-    ]);
-  };
-
-  const getUploadedThumbUri = (lot: Lot): string => {
-    const arr = (lot as any)?.photos;
-    if (!Array.isArray(arr) || arr.length === 0) return "";
-    const u = safeString(arr[0]);
-    return u || "";
-  };
-
-  const getDemoThumbSafe = (lot: Lot) => {
-    try {
-      return getLotThumbnail(lot);
-    } catch {
-      return null;
-    }
-  };
-
-  const [verifyStateById, setVerifyStateById] = useState<Record<string, VerifyState>>(
-    {}
-  );
+  const busyRef = useRef(false);
+  const aliveRef = useRef(false);
 
   useEffect(() => {
-    let alive = true;
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
+    };
+  }, []);
 
-    (async () => {
-      const next: Record<string, VerifyState> = {};
+  useEffect(() => {
+    let cancelled = false;
+    const next: Record<string, VerifyState> = {};
 
+    for (const lot of lots) {
+      next[lot.id] = proofs[lot.id] ? "checking" : "not_verified";
+    }
+    setVerifyStates(next);
+
+    void (async () => {
+      const completed = { ...next };
       for (const lot of lots) {
-        const proof = getProofByLotId(lot.id);
-        next[lot.id] = proof ? "checking" : "not_verified";
-      }
-      if (alive) setVerifyStateById(next);
-
-      const updates: Record<string, VerifyState> = { ...next };
-
-      for (const lot of lots) {
-        const proof = getProofByLotId(lot.id);
+        if (cancelled) return;
+        const proof = proofs[lot.id];
         if (!proof) continue;
-
         try {
           const { hashHex } = await computeLotHash(lot);
-          updates[lot.id] = hashHex === proof.hash ? "verified" : "tampered";
+          completed[lot.id] =
+            hashHex === proof.hash ? "verified" : "tampered";
         } catch {
-          updates[lot.id] = "tampered";
+          completed[lot.id] = "tampered";
         }
       }
-
-      if (alive) setVerifyStateById(updates);
+      if (!cancelled) setVerifyStates(completed);
     })();
 
     return () => {
-      alive = false;
+      cancelled = true;
     };
-  }, [lots, proofs, getProofByLotId]);
+  }, [lots, proofs]);
 
-  const badgeFor = (state: VerifyState) => {
-    switch (state) {
-      case "verified":
-        return {
-          label: `${v.verified} ✓`,
-          dotStyle: styles.dotGreen,
-          textStyle: styles.badgeTextGreen,
-          frameStyle: styles.badgeFrameDefault,
-        };
-      case "tampered":
-        return {
-          label: `⚠ ${v.tampered}`,
-          dotStyle: styles.dotRed,
-          textStyle: styles.badgeTextRed,
-          frameStyle: styles.badgeFrameDanger,
-        };
-      case "checking":
-        return {
-          label: v.checking,
-          dotStyle: styles.dotYellow,
-          textStyle: styles.badgeTextYellow,
-          frameStyle: styles.badgeFrameDefault,
-        };
-      case "not_verified":
-      default:
-        return {
-          label: v.notVerified,
-          dotStyle: styles.dotYellow,
-          textStyle: styles.badgeTextYellow,
-          frameStyle: styles.badgeFrameDefault,
-        };
+  const confirmAction = (
+    title: string,
+    body: string,
+    label: string,
+    action: () => void
+  ) => {
+    if (Platform.OS === "web") {
+      const browser = globalThis as unknown as {
+        confirm?: (message: string) => boolean;
+      };
+      if (browser.confirm?.(`${title}\n\n${body}`)) action();
+      return;
+    }
+    Alert.alert(title, body, [
+      { text: es ? "Cancelar" : "Cancel", style: "cancel" },
+      { text: label, onPress: action },
+    ]);
+  };
+
+  const changeStatus = async (lot: Lot) => {
+    if (
+      !aliveRef.current ||
+      busyRef.current ||
+      !canUpdate ||
+      lot.organization_id !== organization?.id
+    ) {
+      return;
+    }
+
+    busyRef.current = true;
+    setBusyId(lot.id);
+    setActionError(null);
+
+    try {
+      const result = await updateLot(lot.id, {
+        is_active: lot.is_active === false,
+      });
+      if (!aliveRef.current) return;
+      if (!result.ok) setActionError(result.error);
+    } catch {
+      if (aliveRef.current) {
+        setActionError(
+          es ? "No se pudo actualizar el lote." : "Could not update the lot."
+        );
+      }
+    } finally {
+      busyRef.current = false;
+      if (aliveRef.current) setBusyId(null);
     }
   };
 
+  const onChangeStatus = (lot: Lot) => {
+    if (!canUpdate || busyRef.current) return;
+    const activate = lot.is_active === false;
+    const label = activate
+      ? es ? "Activar" : "Activate"
+      : es ? "Desactivar" : "Deactivate";
+
+    confirmAction(
+      `${label}: ${lot.id}`,
+      es
+        ? "El registro y su trazabilidad se conservarán."
+        : "The record and its traceability will be preserved.",
+      label,
+      () => {
+        void changeStatus(lot);
+      }
+    );
+  };
+
+  const onClearProof = (lot: Lot) => {
+    if (!canClearProof || busyRef.current) return;
+    confirmAction(
+      es ? "Quitar verificación local" : "Clear local verification",
+      es
+        ? `Se quitará la prueba local de ${lot.id}.`
+        : `The local proof for ${lot.id} will be cleared.`,
+      es ? "Quitar" : "Clear",
+      () => {
+        if (aliveRef.current) clearProofForLot(lot.id);
+      }
+    );
+  };
+
+  if (isLoading) {
+    return (
+      <View style={styles.page}>
+        <ActivityIndicator />
+        <Text style={styles.sub}>
+          {es ? "Cargando sesión..." : "Loading session..."}
+        </Text>
+      </View>
+    );
+  }
+  if (!isAuthenticated) return <Redirect href="/login" />;
+  if (!hasActiveMembership || !organization) {
+    return <Redirect href="/organization-setup" />;
+  }
+
+  const activeCount = lots.filter((lot) => lot.is_active !== false).length;
+
   return (
-    <View style={styles.page}>
+    <ScrollView
+      style={styles.screen}
+      contentContainerStyle={styles.content}
+    >
+      <View style={styles.container}>
       <View style={styles.headerRow}>
         <Pressable
-          onPress={() => router.replace("/")}
-          style={({ pressed }) => [styles.backBtn, pressed && styles.pressed]}
+          accessibilityRole="button"
+          onPress={() => router.replace("/dashboard")}
+          style={styles.backBtn}
         >
-          <Text style={styles.backBtnText}>← {tt.back}</Text>
+          <Text style={styles.backBtnText}>{tt.back}</Text>
         </Pressable>
 
         <View style={styles.headerRight}>
-          <Text style={styles.title}>{tt.catalogTitle}</Text>
-
+          <Text style={styles.eyebrow}>
+            {es ? "GESTIÓN DE LOTES" : "LOT MANAGEMENT"}
+          </Text>
+          <Text style={styles.title}>{es ? "Lotes" : "Lots"}</Text>
           <View style={styles.pillsRow}>
             <Text style={styles.countPill}>
               {lots.length} {tt.lotsCount}
             </Text>
-
-            {isOperator ? (
+            {canCreate ? (
               <Pressable
-                onPress={onGoCreate}
-                style={({ pressed }) => [styles.createBtn, pressed && styles.pressed]}
+                accessibilityRole="button"
+                disabled={busyId !== null}
+                onPress={() => {
+                  if (!busyRef.current) router.push("/create-lot");
+                }}
+                style={styles.createBtn}
               >
                 <Text style={styles.createBtnText}>{tt.createLot}</Text>
               </Pressable>
@@ -313,327 +248,425 @@ export default function CatalogScreen() {
         </View>
       </View>
 
-      <Text style={styles.sub}>{tt.catalogSub}</Text>
+      <Text style={styles.sub}>
+        {organization.name}
+        {"\n"}
+        {es
+          ? "Lotes vinculados a sus cosechas de origen."
+          : "Lots linked to their source harvests."}
+      </Text>
 
-      <ScrollView contentContainerStyle={styles.list} showsVerticalScrollIndicator>
-        {lots.map((lot) => {
-          const uploadedUri = getUploadedThumbUri(lot);
-          const demoThumb = getDemoThumbSafe(lot);
+      <View style={styles.summary}>
+        {[
+          { label: es ? "Registrados" : "Registered", value: lots.length },
+          { label: es ? "Activos" : "Active", value: activeCount },
+          { label: es ? "Inactivos" : "Inactive", value: lots.length - activeCount },
+        ].map((item) => (
+          <View key={item.label} style={styles.summaryCard}>
+            <Text style={styles.summaryValue}>
+              {isLoadingLots || lotsError ? "—" : item.value}
+            </Text>
+            <Text style={styles.summaryLabel}>{item.label}</Text>
+          </View>
+        ))}
+      </View>
 
-          let productLabel = "";
-          try {
-            productLabel = getProductLabel(lot, lang);
-          } catch {
-            productLabel =
-              safeString((lot as any)?.product_en) ||
-              safeString((lot as any)?.product_es) ||
-              "—";
-          }
+      {actionError ? (
+        <Text accessibilityRole="alert" style={[styles.sub, { color: c.red }]}>
+          {actionError}
+        </Text>
+      ) : null}
 
-          const state = verifyStateById[lot.id] ?? "not_verified";
-          const badge = badgeFor(state);
+      {isLoadingLots ? (
+        <View>
+          <ActivityIndicator />
+          <Text style={styles.sub}>
+            {es ? "Cargando lotes..." : "Loading lots..."}
+          </Text>
+        </View>
+      ) : lotsError ? (
+        <View>
+          <Text accessibilityRole="alert" style={[styles.sub, { color: c.red }]}>
+            {lotsError}
+          </Text>
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => void refreshLots()}
+            style={styles.backBtn}
+          >
+            <Text style={styles.backBtnText}>
+              {es ? "Reintentar" : "Retry"}
+            </Text>
+          </Pressable>
+        </View>
+      ) : (
+        <View style={styles.list}>
+          {lots.length === 0 ? (
+            <Text style={styles.sub}>
+              {es
+                ? "Todavía no hay lotes registrados en esta organización."
+                : "No lots have been registered in this organization yet."}
+            </Text>
+          ) : null}
 
-          const proof = getProofByLotId(lot.id);
-          const hasProof = !!proof?.txHash;
+          {lots.map((lot) => {
+            const uploaded = lot.photos?.[0]?.trim();
+            const thumbnail = getLotThumbnail(lot);
+            const state = verifyStates[lot.id] ?? "not_verified";
+            const label =
+              state === "verified"
+                ? es ? "Verificado" : "Verified"
+                : state === "tampered"
+                  ? es ? "Alterado" : "Tampered"
+                  : state === "checking"
+                    ? es ? "Verificando..." : "Checking..."
+                    : es ? "No verificado" : "Not verified";
+            const badgeColor =
+              state === "verified" ? c.green :
+                state === "tampered" ? c.red : c.yellow;
+            const active = lot.is_active !== false;
 
-          const hasUploaded = !!uploadedUri;
-          const hasDemo = !!demoThumb;
+            return (
+              <Pressable
+                key={lot.id}
+                accessibilityRole="button"
+                disabled={busyId !== null}
+                onPress={() =>
+                  router.push({
+                    pathname: "/lot/[id]",
+                    params: { id: lot.id },
+                  })
+                }
+                style={styles.card}
+              >
+                <View style={styles.thumbWrap}>
+                  {uploaded ? (
+                    <Image source={{ uri: uploaded }} style={styles.thumb} />
+                  ) : thumbnail ? (
+                    <Image source={thumbnail} style={styles.thumb} />
+                  ) : (
+                    <View style={styles.thumbPlaceholder}>
+                      <Text style={styles.thumbPlaceholderText}>IMG</Text>
+                    </View>
+                  )}
+                </View>
 
-          return (
-            <Pressable
-              key={lot.id}
-              onPress={() => onOpenLot(lot.id)}
-              style={({ pressed }) => [styles.card, pressed && styles.pressed]}
-            >
-              <View style={[styles.badgeCorner, badge.frameStyle]}>
-                <View style={[styles.dot, badge.dotStyle]} />
-                <Text style={[styles.badgeTextBase, badge.textStyle]} numberOfLines={1}>
-                  {badge.label}
-                </Text>
-
-                {isOperator && hasProof ? (
-                  <Pressable
-                    onPressIn={(e) => stopEvt(e)}
-                    onPress={(e) => {
-                      stopEvt(e);
-                      onClearVerified(lot.id);
-                    }}
-                    style={({ pressed }) => [styles.clearVerifiedBtn, pressed && styles.pressed]}
-                  >
-                    <Text style={styles.clearVerifiedText}>{v.clear}</Text>
-                  </Pressable>
-                ) : null}
-              </View>
-
-              <View style={styles.thumbWrap}>
-                {hasUploaded ? (
-                  <Image source={{ uri: uploadedUri }} style={styles.thumb} />
-                ) : hasDemo ? (
-                  <Image source={demoThumb as any} style={styles.thumb} />
-                ) : (
-                  <View style={styles.thumbPlaceholder}>
-                    <Text style={styles.thumbPlaceholderText}>{v.img}</Text>
+                <View style={styles.cardBody}>
+                  <View style={styles.rowTop}>
+                    <Text style={styles.product}>
+                      {getProductLabel(lot, lang)}
+                    </Text>
+                    <Text style={styles.idBadge}>{lot.id}</Text>
                   </View>
-                )}
-              </View>
-
-              <View style={styles.cardBody}>
-                <View style={styles.rowTop}>
-                  <Text style={styles.product} numberOfLines={1}>
-                    {productLabel}
+                  <Text style={styles.meta}>{tt.origin}: {lot.origin}</Text>
+                  <Text style={styles.meta}>
+                    {tt.harvestDate}: {lot.harvestDate}
+                    {" · "}{tt.batch}: {lot.batch}
                   </Text>
-                  <Text style={styles.idBadge}>{lot.id}</Text>
+                  <Text style={[
+                    styles.statusPill,
+                    active ? styles.statusActive : styles.statusInactive,
+                  ]}>
+                    {active
+                      ? es ? "Activo" : "Active"
+                      : es ? "Inactivo" : "Inactive"}
+                  </Text>
+
+                  <View style={styles.pillsRow}>
+                    <Text style={[styles.badgeTextBase, { color: badgeColor }]}>
+                      {label}
+                    </Text>
+                    {canClearProof && proofs[lot.id] ? (
+                      <Pressable
+                        accessibilityRole="button"
+                        disabled={busyId !== null}
+                        onPressIn={stopEvt}
+                        onPress={(event) => {
+                          stopEvt(event);
+                          onClearProof(lot);
+                        }}
+                        style={styles.clearVerifiedBtn}
+                      >
+                        <Text style={styles.clearVerifiedText}>
+                          {es ? "Quitar prueba local" : "Clear local proof"}
+                        </Text>
+                      </Pressable>
+                    ) : null}
+                  </View>
+
+                  <View style={styles.rowBottom}>
+                    <Text style={styles.openHint}>{tt.openDetailsHint}</Text>
+                    {canUpdate ? (
+                      <Pressable
+                        accessibilityRole="button"
+                        disabled={busyId !== null}
+                        onPressIn={stopEvt}
+                        onPress={(event) => {
+                          stopEvt(event);
+                          onChangeStatus(lot);
+                        }}
+                        style={[
+                          styles.deleteBtn,
+                          busyId !== null ? { opacity: 0.5 } : null,
+                        ]}
+                      >
+                        <Text style={styles.deleteBtnText}>
+                          {busyId === lot.id
+                            ? es ? "Guardando..." : "Saving..."
+                            : active
+                              ? es ? "Desactivar" : "Deactivate"
+                              : es ? "Activar" : "Activate"}
+                        </Text>
+                      </Pressable>
+                    ) : null}
+                  </View>
                 </View>
-
-                <Text style={styles.meta} numberOfLines={1}>
-                  {tt.origin}: {lot.origin}
-                </Text>
-
-                <Text style={styles.meta} numberOfLines={1}>
-                  {tt.harvestDate}: {lot.harvestDate} • {tt.batch}: {lot.batch}
-                </Text>
-
-                <View style={styles.rowBottom}>
-                  <Text style={styles.openHint}>{tt.openDetailsHint}</Text>
-
-                  {isOperator ? (
-                    <Pressable
-                      onPressIn={(e) => stopEvt(e)}
-                      onPress={(e) => {
-                        stopEvt(e);
-                        onDelete(lot.id);
-                      }}
-                      style={({ pressed }) => [styles.deleteBtn, pressed && styles.pressed]}
-                    >
-                      <Text style={styles.deleteBtnText}>{tt.delete}</Text>
-                    </Pressable>
-                  ) : null}
-                </View>
-              </View>
-            </Pressable>
-          );
-        })}
-      </ScrollView>
-    </View>
+              </Pressable>
+            );
+          })}
+        </View>
+      )}
+      </View>
+    </ScrollView>
   );
 }
 
-type ThemeColors = ReturnType<typeof getTheme>["colors"];
 
-const makeStyles = (c: ThemeColors) =>
-  StyleSheet.create({
-    page: { flex: 1, backgroundColor: c.bg, padding: 20 },
-
-    headerRow: {
-      flexDirection: "row",
-      alignItems: "flex-start",
-      justifyContent: "space-between",
-      gap: 12,
-      marginBottom: 10,
-    },
-    headerRight: { flex: 1, alignItems: "flex-end", gap: 8 },
-
-    pillsRow: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 10,
-      flexWrap: "wrap",
-      justifyContent: "flex-end",
-    },
-
-    backBtn: {
-      backgroundColor: c.card,
-      borderColor: c.border,
-      borderWidth: 1,
-      paddingVertical: 10,
-      paddingHorizontal: 14,
-      borderRadius: 999,
-      ...(Platform.OS === "web" ? ({ cursor: "pointer" } as any) : null),
-    },
-    backBtnText: { color: c.text, fontWeight: "900", letterSpacing: 0.6 },
-
-    pressed: { opacity: 0.92, transform: [{ scale: 0.99 }] },
-
-    title: { color: c.text, fontSize: 28, fontWeight: "900", letterSpacing: 1 },
-    sub: {
-      color: c.muted,
-      fontWeight: "800",
-      letterSpacing: 0.2,
-      marginBottom: 12,
-    },
-
-    countPill: {
-      alignSelf: "flex-end",
-      color: c.text,
-      fontWeight: "900",
-      letterSpacing: 0.4,
-      backgroundColor: c.segmentBg,
-      borderWidth: 1,
-      borderColor: c.border,
-      paddingVertical: 6,
-      paddingHorizontal: 10,
-      borderRadius: 999,
-      fontSize: 12,
-    },
-
-    createBtn: {
-      backgroundColor: c.green,
-      borderColor: c.green,
-      borderWidth: 1,
-      paddingVertical: 8,
-      paddingHorizontal: 12,
-      borderRadius: 999,
-      ...(Platform.OS === "web" ? ({ cursor: "pointer" } as any) : null),
-    },
-    createBtnText: {
-      color: "white",
-      fontWeight: "900",
-      letterSpacing: 0.6,
-      fontSize: 12,
-    },
-
-    list: { gap: 12, paddingBottom: 30 },
-
-    card: {
-      flexDirection: "row",
-      gap: 12,
-      backgroundColor: c.card,
-      borderWidth: 1,
-      borderColor: c.border,
-      borderRadius: 18,
-      padding: 12,
-      alignItems: "center",
-      position: "relative",
-      ...(Platform.OS === "web" ? ({ cursor: "pointer" } as any) : null),
-    },
-
-    badgeCorner: {
-      position: "absolute",
-      top: 10,
-      right: 10,
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 8,
-      borderWidth: 1,
-      borderColor: c.border,
-      paddingVertical: 6,
-      paddingHorizontal: 10,
-      borderRadius: 999,
-      zIndex: 5,
-      maxWidth: "90%",
-      backgroundColor: c.segmentBg,
-    },
-    badgeFrameDefault: { backgroundColor: c.segmentBg },
-    badgeFrameDanger: { backgroundColor: c.dangerBg, borderColor: c.red },
-
-    dot: {
-      width: 10,
-      height: 10,
-      borderRadius: 999,
-      borderWidth: 1,
-      borderColor: c.border,
-    },
-    dotGreen: { backgroundColor: c.green },
-    dotYellow: { backgroundColor: c.yellow },
-    dotRed: { backgroundColor: c.red },
-
-    badgeTextBase: {
-      fontWeight: "900",
-      letterSpacing: 0.35,
-      fontSize: 12,
-      maxWidth: 180,
-    },
-    badgeTextGreen: { color: c.green },
-    badgeTextYellow: { color: c.yellow },
-    badgeTextRed: { color: c.red },
-
-    clearVerifiedBtn: {
-      borderWidth: 1,
-      borderColor: c.border,
-      backgroundColor: c.card,
-      paddingVertical: 5,
-      paddingHorizontal: 10,
-      borderRadius: 999,
-      ...(Platform.OS === "web" ? ({ cursor: "pointer" } as any) : null),
-    },
-    clearVerifiedText: {
-      color: c.text,
-      fontWeight: "900",
-      letterSpacing: 0.3,
-      fontSize: 12,
-    },
-
-    thumbWrap: {
-      width: 84,
-      height: 84,
-      borderRadius: 14,
-      overflow: "hidden",
-      borderWidth: 1,
-      borderColor: c.border,
-      backgroundColor: c.segmentBg,
-    },
-    thumb: { width: "100%", height: "100%", resizeMode: "cover" },
-    thumbPlaceholder: { flex: 1, alignItems: "center", justifyContent: "center" },
-    thumbPlaceholderText: { color: c.muted, fontWeight: "900", letterSpacing: 1 },
-
-    cardBody: { flex: 1, gap: 6 },
-
-    rowTop: {
-      flexDirection: "row",
-      alignItems: "center",
-      justifyContent: "space-between",
-      gap: 10,
-    },
-    product: {
-      color: c.text,
-      fontSize: 16,
-      fontWeight: "900",
-      letterSpacing: 0.3,
-      flex: 1,
-      paddingRight: 6,
-    },
-
-    idBadge: {
-      color: c.text,
-      fontWeight: "900",
-      letterSpacing: 0.4,
-      backgroundColor: c.segmentBg,
-      borderWidth: 1,
-      borderColor: c.border,
-      paddingVertical: 5,
-      paddingHorizontal: 9,
-      borderRadius: 999,
-      fontSize: 11,
-    },
-
-    meta: { color: c.muted, fontWeight: "800", letterSpacing: 0.2 },
-
-    rowBottom: {
-      flexDirection: "row",
-      alignItems: "center",
-      justifyContent: "space-between",
-      marginTop: 4,
-    },
-    openHint: {
-      color: c.text,
-      fontWeight: "900",
-      letterSpacing: 0.4,
-      fontSize: 12,
-    },
-
-    deleteBtn: {
-      backgroundColor: c.segmentBg,
-      borderWidth: 1,
-      borderColor: c.border,
-      paddingVertical: 8,
-      paddingHorizontal: 10,
-      borderRadius: 999,
-      ...(Platform.OS === "web" ? ({ cursor: "pointer" } as any) : null),
-    },
-    deleteBtnText: {
-      color: c.text,
-      fontWeight: "900",
-      letterSpacing: 0.4,
-      fontSize: 12,
-    },
-  });
+const styles = StyleSheet.create({
+  screen: {
+    flex: 1,
+    backgroundColor: colors.light.background,
+  },
+  content: {
+    flexGrow: 1,
+    paddingBottom: spacing.xxl,
+  },
+  container: {
+    width: "100%",
+    maxWidth: layout.maxContentWidth,
+    alignSelf: "center",
+    paddingHorizontal: layout.screenPadding,
+    paddingTop: spacing.xl,
+    gap: spacing.md,
+  },
+  page: {
+    flex: 1,
+    backgroundColor: colors.light.background,
+    padding: layout.screenPadding,
+    gap: spacing.md,
+  },
+  headerRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "flex-start",
+    gap: spacing.lg,
+  },
+  headerRight: {
+    flex: 1,
+    minWidth: 180,
+    gap: spacing.sm,
+  },
+  eyebrow: {
+    color: colors.brand.primary,
+    fontSize: typography.size.xs,
+    fontWeight: typography.weight.bold,
+    letterSpacing: 2,
+  },
+  title: {
+    color: colors.light.text,
+    fontSize: typography.size.xxl,
+    fontWeight: typography.weight.extraBold,
+  },
+  sub: {
+    color: colors.light.textSecondary,
+    fontSize: typography.size.md,
+    lineHeight: 25,
+  },
+  pillsRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    gap: spacing.sm,
+  },
+  countPill: {
+    color: colors.light.textSecondary,
+    fontSize: typography.size.sm,
+    fontWeight: typography.weight.medium,
+    paddingVertical: spacing.sm,
+  },
+  backBtn: {
+    minHeight: 48,
+    justifyContent: "center",
+    paddingHorizontal: spacing.md,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.light.border,
+    backgroundColor: colors.light.surface,
+  },
+  backBtnText: {
+    color: colors.brand.primary,
+    fontSize: typography.size.sm,
+    fontWeight: typography.weight.semibold,
+  },
+  createBtn: {
+    minHeight: 48,
+    justifyContent: "center",
+    alignItems: "center",
+    paddingHorizontal: spacing.lg,
+    borderRadius: radius.md,
+    backgroundColor: colors.brand.primary,
+  },
+  createBtnText: {
+    color: colors.light.surface,
+    fontSize: typography.size.sm,
+    fontWeight: typography.weight.bold,
+  },
+  summary: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: spacing.sm,
+    marginBottom: spacing.sm,
+  },
+  summaryCard: {
+    flex: 1,
+    minWidth: 90,
+    padding: spacing.md,
+    gap: spacing.xs,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.light.border,
+    backgroundColor: colors.light.surface,
+  },
+  summaryValue: {
+    color: colors.brand.primary,
+    fontSize: typography.size.xl,
+    fontWeight: typography.weight.extraBold,
+  },
+  summaryLabel: {
+    color: colors.light.textSecondary,
+    fontSize: typography.size.sm,
+  },
+  list: {
+    gap: spacing.md,
+  },
+  card: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "flex-start",
+    gap: spacing.md,
+    padding: spacing.lg,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.light.border,
+    backgroundColor: colors.light.surface,
+  },
+  thumbWrap: {
+    width: 88,
+    height: 88,
+    overflow: "hidden",
+    borderRadius: radius.md,
+    backgroundColor: colors.light.surfaceSecondary,
+  },
+  thumb: {
+    width: "100%",
+    height: "100%",
+    resizeMode: "cover",
+  },
+  thumbPlaceholder: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  thumbPlaceholderText: {
+    color: colors.light.textSecondary,
+    fontWeight: typography.weight.semibold,
+  },
+  cardBody: {
+    flex: 1,
+    minWidth: 170,
+    gap: spacing.sm,
+  },
+  rowTop: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    gap: spacing.sm,
+  },
+  product: {
+    flexGrow: 1,
+    flexShrink: 1,
+    color: colors.light.text,
+    fontSize: typography.size.lg,
+    fontWeight: typography.weight.bold,
+  },
+  idBadge: {
+    flexShrink: 1,
+    color: colors.light.textSecondary,
+    fontSize: typography.size.xs,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+    borderRadius: radius.sm,
+    backgroundColor: colors.light.surfaceSecondary,
+  },
+  meta: {
+    color: colors.light.textSecondary,
+    fontSize: typography.size.sm,
+    lineHeight: 22,
+  },
+  statusPill: {
+    alignSelf: "flex-start",
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+    borderRadius: radius.full,
+    fontSize: typography.size.xs,
+    fontWeight: typography.weight.semibold,
+    overflow: "hidden",
+  },
+  statusActive: {
+    color: colors.brand.primaryDark,
+    backgroundColor: colors.brand.primaryLight,
+  },
+  statusInactive: {
+    color: colors.light.textSecondary,
+    backgroundColor: colors.light.surfaceSecondary,
+  },
+  badgeTextBase: {
+    fontSize: typography.size.xs,
+    fontWeight: typography.weight.semibold,
+  },
+  clearVerifiedBtn: {
+    minHeight: 48,
+    justifyContent: "center",
+    paddingHorizontal: spacing.sm,
+  },
+  clearVerifiedText: {
+    color: colors.light.textSecondary,
+    fontSize: typography.size.xs,
+  },
+  rowBottom: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: spacing.sm,
+    marginTop: spacing.sm,
+  },
+  openHint: {
+    color: colors.brand.primary,
+    fontSize: typography.size.sm,
+    fontWeight: typography.weight.semibold,
+  },
+  deleteBtn: {
+    minHeight: 48,
+    justifyContent: "center",
+    paddingHorizontal: spacing.md,
+    borderWidth: 1,
+    borderColor: colors.light.border,
+    borderRadius: radius.md,
+  },
+  deleteBtnText: {
+    color: colors.light.textSecondary,
+    fontSize: typography.size.sm,
+    fontWeight: typography.weight.semibold,
+  },
+});

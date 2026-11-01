@@ -4,10 +4,11 @@ import Constants from "expo-constants";
 import * as ImagePicker from "expo-image-picker";
 import * as Linking from "expo-linking";
 import * as Print from "expo-print";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { Redirect, useLocalSearchParams, useRouter } from "expo-router";
 import * as Sharing from "expo-sharing";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
+    ActivityIndicator,
     Alert,
     Image,
     KeyboardAvoidingView,
@@ -20,6 +21,7 @@ import {
     TextInput,
     View,
 } from "react-native";
+import { useAuth } from "../../src/features/auth";
 import { computeLotHash } from "../hash";
 import type { Lang } from "../i18n";
 import { t as I18N } from "../i18n";
@@ -27,7 +29,7 @@ import { getProductLabel, type Lot } from "../lots";
 import { useLots } from "../lots-store";
 import { verifyOnStarknetSim, type StarknetSimResult } from "../starknet-sim";
 import { storageGet, storageSet } from "../storage";
-import { getTheme } from "../theme";
+import { colors, spacing, radius, typography, layout } from "../../src/theme/tokens";
 
 type TT = (typeof I18N)[Lang];
 
@@ -171,17 +173,25 @@ function cleanUriList(input: any): string[] {
 export default function LotDetailsScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ id?: string | string[] }>();
-  const lotId = normalizeId(params.id);
+  const lotId = normalizeId(params.id).trim().toUpperCase();
+
+  const {
+    user,
+    isLoading,
+    isAuthenticated,
+    hasActiveMembership,
+    organization,
+    can,
+  } = useAuth();
 
   const {
     getLotById,
     updateLot,
+    isLoadingLots,
+    lotsError,
+    refreshLots,
     lang,
     setLang,
-    mode,
-    enterOperatorWithPin,
-    exitToClient,
-    themeName,
 
     // ✅ proofs (persisted)
     getProofByLotId,
@@ -191,15 +201,19 @@ export default function LotDetailsScreen() {
 
   const tt: TT = I18N[lang];
 
-  const theme = useMemo(() => getTheme(themeName), [themeName]);
-  const c = theme.colors;
+  const c = detailColors;
   const styles = useMemo(() => makeStyles(c), [c]);
 
-  const lot = (lotId ? getLotById(lotId) : undefined) as Lot | undefined;
+  const foundLot = lotId ? getLotById(lotId) : undefined;
+  const lot =
+    hasActiveMembership && foundLot?.organization_id === organization?.id
+      ? foundLot
+      : undefined;
   const demoPhotos = useMemo(() => (lot ? getProductPhotos(lot) : []), [lot]);
 
   // ✅ SINGLE SOURCE OF TRUTH
-  const isOperator = mode === "operator";
+  const isOperator = hasActiveMembership && can("lots.update");
+  const canVerify = hasActiveMembership && can("verification.perform");
 
   // ✅ Uploaded photos from lot (photos?: string[])
   const uploadedPhotos = useMemo(() => {
@@ -344,8 +358,7 @@ export default function LotDetailsScreen() {
   }, [lang]);
 
   // ✅ PIN overlay
-  const [showPinBox, setShowPinBox] = useState(false);
-  const [pinInput, setPinInput] = useState("");
+
 
   // ⭐ rating + reviews state
   const [rating, setRating] = useState<number>(0);
@@ -360,6 +373,35 @@ export default function LotDetailsScreen() {
 
   // ✅ Photo upload busy (web conversion)
   const [busyPhotos, setBusyPhotos] = useState(false);
+  const [photoError, setPhotoError] = useState<string | null>(null);
+  const photoBusyRef = useRef(false);
+  const photoScope = `${user?.id ?? ""}:${organization?.id ?? ""}:${lotId}`;
+  const photoContextRef = useRef<{
+    scope: string;
+    canEdit: boolean;
+    alive: boolean;
+    lot: Lot | undefined;
+  }>({
+    scope: photoScope,
+    canEdit: isOperator,
+    alive: false,
+    lot,
+  });
+
+  photoContextRef.current.scope = photoScope;
+  photoContextRef.current.canEdit = isOperator;
+  photoContextRef.current.lot = lot;
+
+  useEffect(() => {
+    photoContextRef.current.alive = true;
+    return () => {
+      photoContextRef.current.alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    setPhotoError(null);
+  }, [photoScope]);
 
   // ✅ LOAD reviews/rating
   useEffect(() => {
@@ -464,99 +506,134 @@ export default function LotDetailsScreen() {
   };
 
   /** ✅ Photo picking (Operator only) — PERSISTENT on Web */
-  const requestPhotoPermissionIfNeeded = async () => {
-    if (Platform.OS === "web") return true;
-    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (status !== "granted") {
-      Alert.alert("AgriTrace", ui.permDenied);
-      return false;
+  const runPhotoOperation = async (
+    buildPhotos: () => Promise<string[] | null>,
+    successMessage?: string
+  ) => {
+    const context = photoContextRef.current;
+    if (!context.alive || !context.canEdit || !context.lot || photoBusyRef.current) {
+      return;
     }
-    return true;
+
+    const requestScope = context.scope;
+    const requestLotId = context.lot.id;
+    const isCurrent = () => {
+      const latest = photoContextRef.current;
+      return latest.alive &&
+        latest.scope === requestScope &&
+        latest.canEdit &&
+        latest.lot?.id === requestLotId;
+    };
+
+    photoBusyRef.current = true;
+    setBusyPhotos(true);
+    setPhotoError(null);
+
+    try {
+      const photos = await buildPhotos();
+      if (photos === null || !isCurrent()) return;
+
+      const result = await updateLot(requestLotId, { photos });
+      if (!isCurrent()) return;
+      if (!result.ok) throw new Error(result.error);
+
+      if (successMessage) {
+        if (Platform.OS === "web") {
+          const browser = globalThis as unknown as {
+            alert?: (message: string) => void;
+          };
+          browser.alert?.(successMessage);
+        } else {
+          Alert.alert(lang === "es" ? "Listo" : "Done", successMessage);
+        }
+      }
+    } catch (error) {
+      if (isCurrent()) {
+        setPhotoError(
+          error instanceof Error ? error.message :
+            lang === "es"
+              ? "No se pudieron guardar las fotos."
+              : "Could not save the photos."
+        );
+      }
+    } finally {
+      photoBusyRef.current = false;
+      if (photoContextRef.current.alive) setBusyPhotos(false);
+    }
   };
 
   const onPickMorePhotos = async () => {
-    if (!lot) return;
-    if (!isOperator) return;
+    const requestScope = photoContextRef.current.scope;
 
-    try {
-      const ok = await requestPhotoPermissionIfNeeded();
-      if (!ok) return;
-
-      const current = cleanUriList((lot as any)?.photos).slice(0, 30);
+    await runPhotoOperation(async () => {
+      const current = cleanUriList(photoContextRef.current.lot?.photos);
       const remaining = Math.max(0, 12 - current.length);
-      if (remaining <= 0) {
-        if (Platform.OS === "web") {
-          // @ts-ignore
-          globalThis?.alert?.(ui.maxPhotos);
-        } else {
-          Alert.alert("AgriTrace", ui.maxPhotos);
+      if (remaining === 0) throw new Error(ui.maxPhotos);
+
+      if (Platform.OS !== "web") {
+        const permission =
+          await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (permission.status !== "granted") {
+          throw new Error(ui.permDenied);
         }
-        return;
       }
 
-      const res = await ImagePicker.launchImageLibraryAsync({
+      const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
         quality: 0.85,
         allowsEditing: false,
-        allowsMultipleSelection: true as any,
-        selectionLimit: remaining as any,
+        allowsMultipleSelection: true,
+        selectionLimit: remaining,
       });
+      if (result.canceled) return null;
 
-      if (res.canceled) return;
+      const picked = result.assets.map((asset) => asset.uri).filter(Boolean);
+      if (!picked.length) return null;
 
-      const picked = (res.assets ?? [])
-        .map((a) => a?.uri)
-        .filter((u): u is string => !!u);
+      const photos =
+        Platform.OS === "web"
+          ? await Promise.all(picked.map(webUriToDataUrl))
+          : picked;
 
-      if (picked.length === 0) return;
+      const latest = photoContextRef.current;
+      if (latest.scope !== requestScope) return null;
+      const existing = cleanUriList(latest.lot?.photos);
+      const merged = Array.from(new Set([...existing, ...photos]));
 
-      if (Platform.OS === "web") {
-        setBusyPhotos(true);
-        try {
-          const converted: string[] = [];
-          for (const uri of picked) {
-            const dataUrl = await webUriToDataUrl(uri);
-            if (dataUrl) converted.push(dataUrl);
-          }
-          const next = [...current, ...converted].slice(0, 12);
-          updateLot(lot.id, { photos: next });
-        } finally {
-          setBusyPhotos(false);
-        }
-        return;
-      }
-
-      // Native
-      const next = [...current, ...picked].slice(0, 12);
-      updateLot(lot.id, { photos: next });
-    } catch {
-      setBusyPhotos(false);
-      Alert.alert("AgriTrace", ui.pickFailed);
-    }
+      if (merged.length > 12) throw new Error(ui.maxPhotos);
+      return merged;
+    });
   };
 
   const onRemoveUploadedPhoto = (uri: string) => {
-    if (!lot) return;
-    if (!isOperator) return;
+    const context = photoContextRef.current;
+    if (!context.alive || !context.canEdit || !context.lot || photoBusyRef.current) {
+      return;
+    }
+
+    const requestScope = context.scope;
+    const remove = () => {
+      const latest = photoContextRef.current;
+      if (!latest.alive || latest.scope !== requestScope || !latest.canEdit) return;
+
+      void runPhotoOperation(async () =>
+        cleanUriList(photoContextRef.current.lot?.photos)
+          .filter((item) => item !== uri),
+        ui.removed
+      );
+    };
+
+    if (Platform.OS === "web") {
+      const browser = globalThis as unknown as {
+        confirm?: (message: string) => boolean;
+      };
+      if (browser.confirm?.(ui.removePhotoBody)) remove();
+      return;
+    }
 
     Alert.alert(ui.removePhotoQ, ui.removePhotoBody, [
       { text: tt.cancel, style: "cancel" },
-      {
-        text: ui.removePhoto,
-        style: "destructive",
-        onPress: () => {
-          const current = cleanUriList((lot as any)?.photos);
-          const next = current.filter((x) => String(x) !== String(uri));
-          updateLot(lot.id, { photos: next });
-
-          if (Platform.OS === "web") {
-            // @ts-ignore
-            globalThis?.alert?.(ui.removed);
-          } else {
-            Alert.alert(lang === "es" ? "Listo" : "Done", ui.removed);
-          }
-        },
-      },
+      { text: ui.removePhoto, style: "destructive", onPress: remove },
     ]);
   };
 
@@ -639,31 +716,6 @@ export default function LotDetailsScreen() {
     }
   };
 
-  const openPin = () => {
-    setPinInput("");
-    setShowPinBox(true);
-  };
-
-  const cancelPin = () => {
-    setPinInput("");
-    setShowPinBox(false);
-  };
-
-  const confirmPin = () => {
-    if (pinInput.length !== 4) {
-      Alert.alert(tt.invalidPin, tt.pinMustBe4);
-      return;
-    }
-    const ok = enterOperatorWithPin(pinInput);
-    if (!ok) {
-      Alert.alert(tt.wrongPin, tt.tryAgain);
-      return;
-    }
-    setShowPinBox(false);
-    Alert.alert(tt.operatorEnabled, tt.nowOperator);
-  };
-
-  // ⭐ Operator-only rating
   const onSetRating = (n: number) => {
     if (!isOperator) return;
     setRating(n);
@@ -740,6 +792,7 @@ export default function LotDetailsScreen() {
   }, [lang, verifying]);
 
   const onVerifySim = async () => {
+    if (!canVerify || verifying || busyPhotos) return;
     if (!lot || hashHex === "—") return;
 
     try {
@@ -802,7 +855,7 @@ export default function LotDetailsScreen() {
 
   const onClearProof = () => {
     if (!lot) return;
-    if (!isOperator) return;
+    if (!canVerify || verifying) return;
 
     clearProofForLot(lot.id);
     setSimResult(null);
@@ -1038,6 +1091,44 @@ export default function LotDetailsScreen() {
     }
   };
 
+  if (isLoading) {
+    return (
+      <View style={styles.page}>
+        <ActivityIndicator />
+      </View>
+    );
+  }
+  if (!isAuthenticated) return <Redirect href="/login" />;
+  if (!hasActiveMembership || !organization) {
+    return <Redirect href="/organization-setup" />;
+  }
+  if (isLoadingLots || lotsError) {
+    return (
+      <View style={styles.page}>
+        <Pressable onPress={goBack} style={styles.backBtn}>
+          <Text style={styles.backBtnText}>{tt.back}</Text>
+        </Pressable>
+        {isLoadingLots ? (
+          <ActivityIndicator />
+        ) : (
+          <>
+            <Text accessibilityRole="alert" style={styles.errorText}>
+              {lotsError}
+            </Text>
+            <Pressable
+              onPress={() => void refreshLots()}
+              style={styles.secondaryBtn}
+            >
+              <Text style={styles.secondaryBtnText}>
+                {lang === "es" ? "Reintentar" : "Retry"}
+              </Text>
+            </Pressable>
+          </>
+        )}
+      </View>
+    );
+  }
+
   return (
     <KeyboardAvoidingView
       style={styles.page}
@@ -1083,37 +1174,34 @@ export default function LotDetailsScreen() {
             </Pressable>
           </View>
 
-          <Text style={styles.modeBadge}>{isOperator ? tt.operator : tt.client}</Text>
-
           {isOperator ? (
-            <>
-              <Pressable
-                onPress={onEditLot}
-                style={({ pressed }) => [styles.secondaryBtn, pressed && styles.pressed]}
-              >
-                <Text style={styles.secondaryBtnText}>{ui.editLot}</Text>
-              </Pressable>
-
-              <Pressable
-                onPress={exitToClient}
-                style={({ pressed }) => [styles.secondaryBtn, pressed && styles.pressed]}
-              >
-                <Text style={styles.secondaryBtnText}>{tt.exit}</Text>
-              </Pressable>
-            </>
-          ) : (
             <Pressable
-              onPress={openPin}
-              style={({ pressed }) => [styles.secondaryBtn, pressed && styles.pressed]}
+              onPress={onEditLot}
+              disabled={busyPhotos}
+              style={({ pressed }) => [
+                styles.secondaryBtn,
+                pressed && styles.pressed,
+                busyPhotos && styles.disabled,
+              ]}
             >
-              <Text style={styles.secondaryBtnText}>{tt.enterOperator}</Text>
+              <Text style={styles.secondaryBtnText}>{ui.editLot}</Text>
             </Pressable>
-          )}
+          ) : null}
         </View>
       </View>
 
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator>
+        <Text style={styles.eyebrow}>
+          {lang === "es" ? "TRAZABILIDAD DEL LOTE" : "LOT TRACEABILITY"}
+        </Text>
         <Text style={styles.title}>{tt.lotDetailsTitle}</Text>
+        <Text style={styles.organizationName}>{organization.name}</Text>
+
+        {photoError ? (
+          <Text accessibilityRole="alert" style={[styles.errorText, { color: c.red }]}>
+            {photoError}
+          </Text>
+        ) : null}
 
         {!lotId ? (
           <Text style={styles.errorText}>{tt.missingLotId}</Text>
@@ -1125,6 +1213,16 @@ export default function LotDetailsScreen() {
           <View style={styles.card}>
             <Text style={styles.bigProduct}>{getProductLabel(lot, lang)}</Text>
             <Text style={styles.badge}>{lot.id}</Text>
+            <Text style={[
+              styles.activityBadge,
+              lot.is_active === false
+                ? styles.activityInactive
+                : styles.activityActive,
+            ]}>
+              {lot.is_active === false
+                ? lang === "es" ? "Inactivo" : "Inactive"
+                : lang === "es" ? "Activo" : "Active"}
+            </Text>
 
             {/* ✅ STATUS */}
             <View style={styles.statusBox}>
@@ -1229,6 +1327,7 @@ export default function LotDetailsScreen() {
                       <Image source={{ uri }} style={styles.photo} />
                       {isOperator ? (
                         <Pressable
+                          disabled={busyPhotos}
                           onPress={() => onRemoveUploadedPhoto(uri)}
                           style={({ pressed }) => [styles.photoRemoveBtn, pressed && styles.pressed]}
                         >
@@ -1345,7 +1444,7 @@ export default function LotDetailsScreen() {
                       <Text style={styles.actionBtnText}>{verifyText.copyTx}</Text>
                     </Pressable>
 
-                    {isOperator ? (
+                    {canVerify ? (
                       <Pressable
                         onPress={onClearProof}
                         style={({ pressed }) => [styles.clearBtn, pressed && styles.pressed]}
@@ -1373,7 +1472,7 @@ export default function LotDetailsScreen() {
 
                   <Pressable
                     onPress={onVerifySim}
-                    disabled={verifying}
+                    disabled={verifying || !canVerify || busyPhotos}
                     style={({ pressed }) => [
                       styles.verifyBtn,
                       pressed && !verifying && styles.pressed,
@@ -1496,55 +1595,75 @@ export default function LotDetailsScreen() {
         )}
       </ScrollView>
 
-      {/* PIN overlay */}
-      {showPinBox ? (
-        <View style={styles.pinOverlay}>
-          <Pressable style={styles.pinOverlayBg} onPress={cancelPin} />
-          <View style={styles.pinBox}>
-            <Text style={styles.pinTitle}>{tt.enterOperatorPinTitle}</Text>
-
-            <TextInput
-              style={styles.pinInput}
-              placeholder="••••"
-              placeholderTextColor={c.muted}
-              keyboardType="numeric"
-              maxLength={4}
-              secureTextEntry
-              value={pinInput}
-              onChangeText={(txt) => setPinInput(txt.replace(/[^0-9]/g, ""))}
-              autoFocus
-            />
-
-            <View style={styles.pinButtonsRow}>
-              <Pressable
-                onPress={cancelPin}
-                style={({ pressed }) => [styles.pinCancelBtn, pressed && styles.pressed]}
-              >
-                <Text style={styles.pinCancelText}>{tt.cancel}</Text>
-              </Pressable>
-
-              <Pressable
-                onPress={confirmPin}
-                style={({ pressed }) => [styles.pinConfirmBtn, pressed && styles.pressed]}
-              >
-                <Text style={styles.pinConfirmText}>{tt.confirm}</Text>
-              </Pressable>
-            </View>
-          </View>
-        </View>
-      ) : null}
     </KeyboardAvoidingView>
   );
 }
 
-type ThemeColors = ReturnType<typeof getTheme>["colors"];
+const detailColors = {
+  bg: colors.light.background,
+  card: colors.light.surface,
+  segmentBg: colors.light.surfaceSecondary,
+  text: colors.light.text,
+  muted: colors.light.textSecondary,
+  border: colors.light.border,
+  green: colors.brand.primary,
+  red: colors.light.error,
+};
+
+type ThemeColors = typeof detailColors;
 
 const makeStyles = (c: ThemeColors) =>
   StyleSheet.create({
-    page: { flex: 1, backgroundColor: c.bg, padding: 20 },
-    scrollContent: { paddingBottom: 40 },
+    page: {
+      flex: 1,
+      backgroundColor: c.bg,
+      paddingHorizontal: layout.screenPadding,
+      paddingTop: spacing.xl,
+    },
+    eyebrow: {
+      color: colors.brand.primary,
+      fontSize: typography.size.xs,
+      fontWeight: typography.weight.bold,
+      letterSpacing: 2,
+      marginBottom: spacing.sm,
+    },
+    organizationName: {
+      color: c.muted,
+      fontSize: typography.size.md,
+      lineHeight: 25,
+      marginTop: spacing.sm,
+      marginBottom: spacing.sm,
+    },
+    activityBadge: {
+      alignSelf: "flex-start",
+      marginTop: spacing.sm,
+      paddingHorizontal: spacing.md,
+      paddingVertical: spacing.xs,
+      borderRadius: radius.full,
+      overflow: "hidden",
+      fontSize: typography.size.xs,
+      fontWeight: typography.weight.semibold,
+    },
+    activityActive: {
+      color: colors.brand.primaryDark,
+      backgroundColor: colors.brand.primaryLight,
+    },
+    activityInactive: {
+      color: c.muted,
+      backgroundColor: c.segmentBg,
+    },
+    scrollContent: {
+      width: "100%",
+      maxWidth: layout.maxContentWidth,
+      alignSelf: "center",
+      paddingBottom: spacing.xxl,
+    },
 
     headerRow: {
+      width: "100%",
+      maxWidth: layout.maxContentWidth,
+      alignSelf: "center",
+      flexWrap: "wrap",
       flexDirection: "row",
       justifyContent: "space-between",
       alignItems: "flex-start",
@@ -1553,6 +1672,8 @@ const makeStyles = (c: ThemeColors) =>
     },
 
     headerRight: {
+      flexShrink: 1,
+      minWidth: 0,
       flexDirection: "row",
       alignItems: "center",
       flexWrap: "wrap",
@@ -1569,17 +1690,17 @@ const makeStyles = (c: ThemeColors) =>
       overflow: "hidden",
       backgroundColor: c.card,
     },
-    langBtn: { paddingVertical: 9, paddingHorizontal: 12 },
+    langBtn: { minHeight: 48, justifyContent: "center", paddingVertical: 9, paddingHorizontal: 12 },
     langBtnActive: { backgroundColor: c.segmentBg },
     langText: {
       color: c.muted,
-      fontWeight: "900",
+      fontWeight: typography.weight.bold,
       letterSpacing: 0.6,
       fontSize: 12,
     },
     langTextActive: { color: c.text },
 
-    backBtn: {
+    backBtn: { minHeight: 48, justifyContent: "center",
       backgroundColor: c.card,
       borderColor: c.border,
       borderWidth: 1,
@@ -1588,11 +1709,11 @@ const makeStyles = (c: ThemeColors) =>
       borderRadius: 999,
       ...(Platform.OS === "web" ? ({ cursor: "pointer" } as any) : null),
     },
-    backBtnText: { color: c.text, fontWeight: "900", letterSpacing: 0.6 },
+    backBtnText: { color: c.text, fontWeight: typography.weight.bold, letterSpacing: 0.6 },
 
     modeBadge: {
       color: c.text,
-      fontWeight: "900",
+      fontWeight: typography.weight.bold,
       letterSpacing: 0.4,
       backgroundColor: c.segmentBg,
       borderWidth: 1,
@@ -1603,7 +1724,7 @@ const makeStyles = (c: ThemeColors) =>
       fontSize: 12,
     },
 
-    secondaryBtn: {
+    secondaryBtn: { minHeight: 48, justifyContent: "center",
       borderWidth: 1,
       borderColor: c.border,
       paddingVertical: 10,
@@ -1613,7 +1734,7 @@ const makeStyles = (c: ThemeColors) =>
     },
     secondaryBtnText: {
       color: c.text,
-      fontWeight: "900",
+      fontWeight: typography.weight.bold,
       letterSpacing: 0.6,
       fontSize: 12,
     },
@@ -1623,8 +1744,8 @@ const makeStyles = (c: ThemeColors) =>
 
     title: {
       color: c.text,
-      fontSize: 34,
-      fontWeight: "900",
+      fontSize: typography.size.xxl,
+      fontWeight: typography.weight.bold,
       letterSpacing: 1,
       marginTop: 2,
     },
@@ -1634,21 +1755,21 @@ const makeStyles = (c: ThemeColors) =>
       backgroundColor: c.card,
       borderWidth: 1,
       borderColor: c.border,
-      borderRadius: 18,
+      borderRadius: radius.lg,
       padding: 14,
     },
 
     bigProduct: {
       color: c.text,
       fontSize: 22,
-      fontWeight: "900",
+      fontWeight: typography.weight.bold,
       letterSpacing: 0.6,
     },
     badge: {
       marginTop: 10,
       alignSelf: "flex-start",
       color: c.text,
-      fontWeight: "900",
+      fontWeight: typography.weight.bold,
       letterSpacing: 0.4,
       backgroundColor: c.segmentBg,
       borderWidth: 1,
@@ -1665,7 +1786,7 @@ const makeStyles = (c: ThemeColors) =>
       borderWidth: 1,
       borderColor: c.border,
       backgroundColor: c.segmentBg,
-      borderRadius: 16,
+      borderRadius: radius.lg,
       padding: 12,
       gap: 8,
     },
@@ -1685,21 +1806,21 @@ const makeStyles = (c: ThemeColors) =>
     },
     statusPillInner: { flexDirection: "row", alignItems: "center", gap: 8 },
     statusDot: { width: 10, height: 10, borderRadius: 999, backgroundColor: "#999" },
-    dotVerified: { backgroundColor: "#22c55e" },
-    dotNotVerified: { backgroundColor: "#f59e0b" },
-    dotTampered: { backgroundColor: "#ef4444" },
+    dotVerified: { backgroundColor: colors.light.success },
+    dotNotVerified: { backgroundColor: colors.light.warning },
+    dotTampered: { backgroundColor: colors.light.error },
     statusPillText: {
-      fontWeight: "900",
+      fontWeight: typography.weight.bold,
       letterSpacing: 0.6,
       fontSize: 12,
       color: "white",
     },
-    statusVerified: { backgroundColor: "#16a34a", borderColor: "#16a34a" },
-    statusNotVerified: { backgroundColor: "#6b7280", borderColor: "#6b7280" },
-    statusTampered: { backgroundColor: "#dc2626", borderColor: "#dc2626" },
+    statusVerified: { backgroundColor: colors.brand.primary, borderColor: colors.brand.primary },
+    statusNotVerified: { backgroundColor: colors.light.textSecondary, borderColor: colors.light.textSecondary },
+    statusTampered: { backgroundColor: colors.light.error, borderColor: colors.light.error },
     tamperedHint: {
-      color: "#dc2626",
-      fontWeight: "900",
+      color: colors.light.error,
+      fontWeight: typography.weight.bold,
       letterSpacing: 0.2,
       lineHeight: 18,
     },
@@ -1710,7 +1831,7 @@ const makeStyles = (c: ThemeColors) =>
       borderWidth: 1,
       borderColor: c.border,
       backgroundColor: c.segmentBg,
-      borderRadius: 16,
+      borderRadius: radius.lg,
       padding: 12,
       gap: 8,
     },
@@ -1720,15 +1841,15 @@ const makeStyles = (c: ThemeColors) =>
       alignItems: "center",
       gap: 10,
     },
-    timelineLabel: { color: c.text, fontWeight: "900", letterSpacing: 0.2 },
-    timelineValue: { color: c.muted, fontWeight: "900", letterSpacing: 0.2 },
+    timelineLabel: { color: c.text, fontWeight: typography.weight.bold, letterSpacing: 0.2 },
+    timelineValue: { color: c.muted, fontWeight: typography.weight.bold, letterSpacing: 0.2 },
 
     qrBox: {
       marginTop: 14,
       borderWidth: 1,
       borderColor: c.border,
       backgroundColor: c.segmentBg,
-      borderRadius: 16,
+      borderRadius: radius.lg,
       padding: 12,
     },
     qrWrap: {
@@ -1736,7 +1857,7 @@ const makeStyles = (c: ThemeColors) =>
       alignSelf: "center",
       borderWidth: 1,
       borderColor: c.border,
-      borderRadius: 16,
+      borderRadius: radius.lg,
       overflow: "hidden",
       backgroundColor: c.card,
       padding: 12,
@@ -1744,7 +1865,7 @@ const makeStyles = (c: ThemeColors) =>
     qrMissing: {
       marginTop: 10,
       color: c.muted,
-      fontWeight: "800",
+      fontWeight: typography.weight.semibold,
       letterSpacing: 0.2,
     },
     qrActions: {
@@ -1752,7 +1873,7 @@ const makeStyles = (c: ThemeColors) =>
       flexDirection: "row",
       justifyContent: "flex-end",
     },
-    qrBtn: {
+    qrBtn: { minHeight: 48, justifyContent: "center",
       borderWidth: 1,
       borderColor: c.border,
       backgroundColor: c.card,
@@ -1763,14 +1884,14 @@ const makeStyles = (c: ThemeColors) =>
     },
     qrBtnText: {
       color: c.text,
-      fontWeight: "900",
+      fontWeight: typography.weight.bold,
       letterSpacing: 0.4,
       fontSize: 12,
     },
     qrValue: {
       marginTop: 10,
       color: c.muted,
-      fontWeight: "800",
+      fontWeight: typography.weight.semibold,
       letterSpacing: 0.2,
     },
 
@@ -1779,11 +1900,11 @@ const makeStyles = (c: ThemeColors) =>
       borderWidth: 1,
       borderColor: c.border,
       backgroundColor: c.segmentBg,
-      borderRadius: 16,
+      borderRadius: radius.lg,
       padding: 12,
     },
     photosHeaderRow: { flexDirection: "row", alignItems: "flex-start", gap: 12 },
-    photoActionBtn: {
+    photoActionBtn: { minHeight: 48, justifyContent: "center",
       borderWidth: 1,
       borderColor: c.border,
       backgroundColor: c.card,
@@ -1794,14 +1915,14 @@ const makeStyles = (c: ThemeColors) =>
     },
     photoActionBtnText: {
       color: c.text,
-      fontWeight: "900",
+      fontWeight: typography.weight.bold,
       letterSpacing: 0.4,
       fontSize: 12,
     },
     emptyPhotos: {
       marginTop: 10,
       color: c.muted,
-      fontWeight: "800",
+      fontWeight: typography.weight.semibold,
       letterSpacing: 0.2,
     },
 
@@ -1813,14 +1934,14 @@ const makeStyles = (c: ThemeColors) =>
     },
     photoCard: {
       width: 150,
-      borderRadius: 12,
+      borderRadius: radius.md,
       overflow: "hidden",
       borderWidth: 1,
       borderColor: c.border,
       backgroundColor: c.card,
     },
     photo: { width: "100%", height: 150, resizeMode: "cover" },
-    photoRemoveBtn: {
+    photoRemoveBtn: { minHeight: 48, justifyContent: "center",
       borderTopWidth: 1,
       borderTopColor: c.border,
       backgroundColor: c.segmentBg,
@@ -1830,7 +1951,7 @@ const makeStyles = (c: ThemeColors) =>
     },
     photoRemoveBtnText: {
       color: c.text,
-      fontWeight: "900",
+      fontWeight: typography.weight.bold,
       letterSpacing: 0.3,
       fontSize: 12,
     },
@@ -1840,19 +1961,19 @@ const makeStyles = (c: ThemeColors) =>
       borderWidth: 1,
       borderColor: c.border,
       backgroundColor: c.segmentBg,
-      borderRadius: 16,
+      borderRadius: radius.lg,
       padding: 12,
     },
     sectionTitle: {
       color: c.text,
       fontSize: 14,
-      fontWeight: "900",
+      fontWeight: typography.weight.bold,
       letterSpacing: 0.6,
     },
     sectionSub: {
       marginTop: 6,
       color: c.muted,
-      fontWeight: "700",
+      fontWeight: typography.weight.medium,
       letterSpacing: 0.2,
     },
     starsRow: {
@@ -1863,20 +1984,20 @@ const makeStyles = (c: ThemeColors) =>
       gap: 6,
     },
     starBtn: { paddingHorizontal: 2, paddingVertical: 2 },
-    star: { fontSize: 22, fontWeight: "900" },
+    star: { fontSize: 22, fontWeight: typography.weight.bold },
     starOn: { color: c.green },
     starOff: { color: c.muted },
     ratingValue: {
       marginLeft: 8,
       color: c.text,
-      fontWeight: "900",
+      fontWeight: typography.weight.bold,
       letterSpacing: 0.2,
     },
 
     row: { marginTop: 12 },
     label: {
       color: c.muted,
-      fontWeight: "900",
+      fontWeight: typography.weight.bold,
       letterSpacing: 0.4,
       fontSize: 12,
     },
@@ -1887,7 +2008,7 @@ const makeStyles = (c: ThemeColors) =>
       borderWidth: 1,
       borderColor: c.border,
       backgroundColor: c.segmentBg,
-      borderRadius: 16,
+      borderRadius: radius.lg,
       padding: 12,
     },
     verifyHeaderRow: {
@@ -1899,13 +2020,13 @@ const makeStyles = (c: ThemeColors) =>
     verifyTitle: {
       color: c.text,
       fontSize: 14,
-      fontWeight: "900",
+      fontWeight: typography.weight.bold,
       letterSpacing: 0.6,
     },
     verifyText: {
       marginTop: 6,
       color: c.muted,
-      fontWeight: "700",
+      fontWeight: typography.weight.medium,
       letterSpacing: 0.2,
     },
 
@@ -1919,7 +2040,7 @@ const makeStyles = (c: ThemeColors) =>
     },
     verifiedPillText: {
       color: "white",
-      fontWeight: "900",
+      fontWeight: typography.weight.bold,
       letterSpacing: 0.4,
       fontSize: 12,
     },
@@ -1929,11 +2050,11 @@ const makeStyles = (c: ThemeColors) =>
       borderWidth: 1,
       borderColor: c.border,
       backgroundColor: c.card,
-      borderRadius: 14,
+      borderRadius: radius.md,
       padding: 10,
       gap: 6,
     },
-    proofLine: { color: c.muted, fontWeight: "800", letterSpacing: 0.2 },
+    proofLine: { color: c.muted, fontWeight: typography.weight.semibold, letterSpacing: 0.2 },
     proofActions: {
       marginTop: 8,
       flexDirection: "row",
@@ -1942,8 +2063,8 @@ const makeStyles = (c: ThemeColors) =>
     },
 
     hashRow: { marginTop: 12, gap: 8 },
-    hashLabel: { color: c.text, fontWeight: "900", letterSpacing: 0.3 },
-    hashValue: { color: c.muted, fontWeight: "800", letterSpacing: 0.2 },
+    hashLabel: { color: c.text, fontWeight: typography.weight.bold, letterSpacing: 0.3 },
+    hashValue: { color: c.muted, fontWeight: typography.weight.semibold, letterSpacing: 0.2 },
 
     hashActions: {
       flexDirection: "row",
@@ -1952,66 +2073,66 @@ const makeStyles = (c: ThemeColors) =>
       marginTop: 6,
     },
 
-    actionBtn: {
+    actionBtn: { minHeight: 48, justifyContent: "center",
       borderWidth: 1,
       borderColor: c.border,
       backgroundColor: c.card,
       paddingVertical: 10,
       paddingHorizontal: 12,
-      borderRadius: 14,
+      borderRadius: radius.md,
       ...(Platform.OS === "web" ? ({ cursor: "pointer" } as any) : null),
     },
     actionBtnText: {
       color: c.text,
-      fontWeight: "900",
+      fontWeight: typography.weight.bold,
       letterSpacing: 0.6,
       fontSize: 12,
     },
 
-    clearBtn: {
+    clearBtn: { minHeight: 48, justifyContent: "center",
       borderWidth: 1,
       borderColor: c.border,
       backgroundColor: c.segmentBg,
       paddingVertical: 10,
       paddingHorizontal: 12,
-      borderRadius: 14,
+      borderRadius: radius.md,
       ...(Platform.OS === "web" ? ({ cursor: "pointer" } as any) : null),
     },
     clearBtnText: {
       color: c.text,
-      fontWeight: "900",
+      fontWeight: typography.weight.bold,
       letterSpacing: 0.6,
       fontSize: 12,
     },
 
-    verifyBtn: {
+    verifyBtn: { minHeight: 48, justifyContent: "center",
       backgroundColor: c.green,
       borderColor: c.green,
       borderWidth: 1,
       paddingVertical: 10,
       paddingHorizontal: 12,
-      borderRadius: 14,
+      borderRadius: radius.md,
       ...(Platform.OS === "web" ? ({ cursor: "pointer" } as any) : null),
     },
     verifyBtnText: {
       color: "white",
-      fontWeight: "900",
+      fontWeight: typography.weight.bold,
       letterSpacing: 0.6,
       fontSize: 12,
     },
 
-    certificateBtn: {
+    certificateBtn: { minHeight: 48, justifyContent: "center",
       backgroundColor: c.green,
       borderColor: c.green,
       borderWidth: 1,
       paddingVertical: 10,
       paddingHorizontal: 12,
-      borderRadius: 14,
+      borderRadius: radius.md,
       ...(Platform.OS === "web" ? ({ cursor: "pointer" } as any) : null),
     },
     certificateBtnText: {
       color: "white",
-      fontWeight: "900",
+      fontWeight: typography.weight.bold,
       letterSpacing: 0.6,
       fontSize: 12,
     },
@@ -2021,18 +2142,18 @@ const makeStyles = (c: ThemeColors) =>
       borderWidth: 1,
       borderColor: c.border,
       backgroundColor: c.card,
-      borderRadius: 14,
+      borderRadius: radius.md,
       padding: 10,
       gap: 8,
     },
-    payloadTitle: { color: c.text, fontWeight: "900", letterSpacing: 0.4 },
+    payloadTitle: { color: c.text, fontWeight: typography.weight.bold, letterSpacing: 0.4 },
     payloadText: {
       color: c.muted,
-      fontWeight: "800",
+      fontWeight: typography.weight.semibold,
       letterSpacing: 0.2,
       lineHeight: 18,
     },
-    payloadBtn: {
+    payloadBtn: { minHeight: 48, justifyContent: "center",
       alignSelf: "flex-end",
       borderWidth: 1,
       borderColor: c.border,
@@ -2044,7 +2165,7 @@ const makeStyles = (c: ThemeColors) =>
     },
     payloadBtnText: {
       color: c.text,
-      fontWeight: "900",
+      fontWeight: typography.weight.bold,
       letterSpacing: 0.4,
       fontSize: 12,
     },
@@ -2054,12 +2175,12 @@ const makeStyles = (c: ThemeColors) =>
       borderWidth: 1,
       borderColor: c.border,
       backgroundColor: c.card,
-      borderRadius: 14,
+      borderRadius: radius.md,
       padding: 10,
       gap: 6,
     },
-    simTitle: { color: c.text, fontWeight: "900", letterSpacing: 0.4 },
-    simLine: { color: c.muted, fontWeight: "800", letterSpacing: 0.2 },
+    simTitle: { color: c.text, fontWeight: typography.weight.bold, letterSpacing: 0.4 },
+    simLine: { color: c.muted, fontWeight: typography.weight.semibold, letterSpacing: 0.2 },
 
     actions: {
       flexDirection: "row",
@@ -2071,7 +2192,7 @@ const makeStyles = (c: ThemeColors) =>
     errorText: {
       marginTop: 10,
       color: c.muted,
-      fontWeight: "800",
+      fontWeight: typography.weight.semibold,
       letterSpacing: 0.3,
     },
 
@@ -2080,7 +2201,7 @@ const makeStyles = (c: ThemeColors) =>
       borderWidth: 1,
       borderColor: c.border,
       backgroundColor: c.segmentBg,
-      borderRadius: 16,
+      borderRadius: radius.lg,
       padding: 12,
     },
     reviewInput: {
@@ -2089,11 +2210,11 @@ const makeStyles = (c: ThemeColors) =>
       borderColor: c.border,
       backgroundColor: c.card,
       color: c.text,
-      borderRadius: 12,
+      borderRadius: radius.md,
       paddingVertical: 10,
       paddingHorizontal: 12,
       minHeight: 54,
-      fontWeight: "800",
+      fontWeight: typography.weight.semibold,
       letterSpacing: 0.2,
     },
     reviewActions: {
@@ -2101,7 +2222,7 @@ const makeStyles = (c: ThemeColors) =>
       flexDirection: "row",
       justifyContent: "flex-end",
     },
-    reviewBtn: {
+    reviewBtn: { minHeight: 48, justifyContent: "center",
       backgroundColor: c.green,
       borderColor: c.green,
       borderWidth: 1,
@@ -2112,14 +2233,14 @@ const makeStyles = (c: ThemeColors) =>
     },
     reviewBtnText: {
       color: "white",
-      fontWeight: "900",
+      fontWeight: typography.weight.bold,
       letterSpacing: 0.6,
       fontSize: 12,
     },
     emptyReviews: {
       marginTop: 10,
       color: c.muted,
-      fontWeight: "800",
+      fontWeight: typography.weight.semibold,
       letterSpacing: 0.2,
     },
     reviewsList: { marginTop: 10, gap: 10 },
@@ -2127,12 +2248,12 @@ const makeStyles = (c: ThemeColors) =>
       borderWidth: 1,
       borderColor: c.border,
       backgroundColor: c.card,
-      borderRadius: 12,
+      borderRadius: radius.md,
       padding: 10,
     },
     reviewText: {
       color: c.text,
-      fontWeight: "800",
+      fontWeight: typography.weight.semibold,
       letterSpacing: 0.2,
       lineHeight: 18,
     },
@@ -2144,11 +2265,11 @@ const makeStyles = (c: ThemeColors) =>
     },
     reviewDate: {
       color: c.muted,
-      fontWeight: "800",
+      fontWeight: typography.weight.semibold,
       letterSpacing: 0.2,
       fontSize: 12,
     },
-    reviewDeleteBtn: {
+    reviewDeleteBtn: { minHeight: 48, justifyContent: "center",
       borderWidth: 1,
       borderColor: c.border,
       backgroundColor: c.segmentBg,
@@ -2159,7 +2280,7 @@ const makeStyles = (c: ThemeColors) =>
     },
     reviewDeleteText: {
       color: c.text,
-      fontWeight: "900",
+      fontWeight: typography.weight.bold,
       letterSpacing: 0.4,
       fontSize: 12,
     },
@@ -2188,13 +2309,13 @@ const makeStyles = (c: ThemeColors) =>
       backgroundColor: c.card,
       borderWidth: 1,
       borderColor: c.border,
-      borderRadius: 18,
+      borderRadius: radius.lg,
       padding: 14,
     },
     pinTitle: {
       color: c.text,
       fontSize: 16,
-      fontWeight: "900",
+      fontWeight: typography.weight.bold,
       letterSpacing: 0.6,
       marginBottom: 10,
     },
@@ -2203,11 +2324,11 @@ const makeStyles = (c: ThemeColors) =>
       borderColor: c.border,
       backgroundColor: c.segmentBg,
       color: c.text,
-      borderRadius: 12,
+      borderRadius: radius.md,
       paddingVertical: 12,
       paddingHorizontal: 12,
       fontSize: 16,
-      fontWeight: "900",
+      fontWeight: typography.weight.bold,
       letterSpacing: 6,
       textAlign: "center",
     },
@@ -2224,7 +2345,7 @@ const makeStyles = (c: ThemeColors) =>
       paddingHorizontal: 14,
       borderRadius: 999,
     },
-    pinCancelText: { color: c.text, fontWeight: "900", letterSpacing: 0.6 },
+    pinCancelText: { color: c.text, fontWeight: typography.weight.bold, letterSpacing: 0.6 },
     pinConfirmBtn: {
       backgroundColor: c.green,
       borderWidth: 1,
@@ -2233,5 +2354,5 @@ const makeStyles = (c: ThemeColors) =>
       paddingHorizontal: 14,
       borderRadius: 999,
     },
-    pinConfirmText: { color: "white", fontWeight: "900", letterSpacing: 0.6 },
+    pinConfirmText: { color: "white", fontWeight: typography.weight.bold, letterSpacing: 0.6 },
   });

@@ -193,13 +193,28 @@ export async function deleteLotRemote(id: string): Promise<void> {
 /** ===========================
  * ✅ Storage upload
  * =========================== */
-async function uploadOnePhoto(lotId: string, uri: string, index: number) {
+async function uploadOnePhoto(
+  lotId: string,
+  uri: string,
+  index: number,
+  organizationId: string | undefined
+) {
   if (isHttpUrl(uri)) return uri;
 
   const safeLotId = s(lotId).toUpperCase();
+  const safeOrganizationId = s(organizationId).toLowerCase();
+
+  if (
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(safeOrganizationId)
+  ) {
+    throw new Error("A valid organization is required to upload photos.");
+  }
+  if (!/^[A-Z0-9][A-Z0-9_-]{0,127}$/.test(safeLotId)) {
+    throw new Error("Invalid lot ID for photo upload.");
+  }
   const ext = extFromUri(uri);
   const ct = contentTypeFromExt(ext);
-  const path = `${safeLotId}/${Date.now()}_${index}.${ext}`;
+  const path = `${safeOrganizationId}/${safeLotId}/${Date.now()}_${index}_${Math.random().toString(36).slice(2, 10)}.${ext}`;
 
   let bytes: Uint8Array;
   let mime = ct;
@@ -222,7 +237,7 @@ async function uploadOnePhoto(lotId: string, uri: string, index: number) {
 
   const { error: upErr } = await supabase.storage.from(BUCKET).upload(path, bytes, {
     contentType: mime,
-    upsert: true,
+    upsert: false,
   });
 
   if (upErr) throw upErr;
@@ -256,10 +271,10 @@ export async function uploadLotPhotosIfNeeded(lot: Lot): Promise<Lot> {
     }
 
     try {
-      const uploadedUrl = await uploadOnePhoto(lot.id, uri, idx);
+      const uploadedUrl = await uploadOnePhoto(lot.id, uri, idx, lot.organization_id);
       if (uploadedUrl) out.push(uploadedUrl);
     } catch (e: any) {
-      console.warn("[uploadOnePhoto] failed for", lot.id, "idx", idx, "uri", uri, "err", e?.message ?? e);
+      throw new Error(`Photo ${idx + 1}: ${String(e?.message ?? e)}`);
       // Skip this photo so we can still save the lot with any successful uploads
       continue;
     }

@@ -1,23 +1,23 @@
-// app/edit-lot/[id].tsx
 import * as ImagePicker from "expo-image-picker";
-import { useLocalSearchParams, useRouter } from "expo-router";
-import { useEffect, useMemo, useState } from "react";
+import { Redirect, useLocalSearchParams, useRouter } from "expo-router";
+import { useEffect, useRef, useState } from "react";
 import {
-    Alert,
-    Image,
-    KeyboardAvoidingView,
-    Platform,
-    Pressable,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    View,
+  ActivityIndicator,
+  Alert,
+  Image,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
 } from "react-native";
+import { useAuth } from "../../src/features/auth";
 import { t as I18N } from "../i18n";
-import type { Lot } from "../lots";
 import { useLots } from "../lots-store";
-import { getTheme } from "../theme";
+import { colors, spacing, radius, typography, layout } from "../../src/theme/tokens";
 
 function normalizeId(id: string | string[] | undefined) {
   if (!id) return "";
@@ -105,256 +105,279 @@ function s(v: any) {
 export default function EditLotScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ id?: string | string[] }>();
-  const lotId = normalizeId(params.id);
+  const lotId = normalizeId(params.id).trim().toUpperCase();
 
-  const { getLotById, updateLot, lang, mode, themeName } = useLots();
+  const {
+    user,
+    organization,
+    isLoading,
+    isAuthenticated,
+    hasActiveMembership,
+    can,
+  } = useAuth();
+  const {
+    getLotById,
+    updateLot,
+    isLoadingLots,
+    lotsError,
+    refreshLots,
+    lang,
+  } = useLots();
+
   const tt = I18N[lang];
+  const es = lang === "es";
+  const c = {
+    red: colors.light.error,
+  };
 
-  const theme = useMemo(() => getTheme(themeName), [themeName]);
-  const c = theme.colors;
-  const styles = useMemo(() => makeStyles(c), [c]);
+  const allowed = hasActiveMembership && can("lots.update");
+  const found = getLotById(lotId);
+  const lot =
+    found?.organization_id === organization?.id ? found : undefined;
 
-  const lot = (lotId ? (getLotById(lotId) as Lot | undefined) : undefined) as
-    | Lot
-    | undefined;
+  const scope =
+    user && organization && allowed
+      ? `${user.id}:${organization.id}:${lotId}`
+      : null;
 
-  // ✅ Gate: operator only
-  useEffect(() => {
-    if (mode !== "operator") {
-      if (Platform.OS !== "web") Alert.alert(tt.wrongPin, tt.tryAgain);
-      router.replace("/catalog");
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, router]);
-
-  // Avoid flash if client
-  if (mode !== "operator") {
-    return <View style={styles.page} />;
-  }
-
-  const ui = useMemo(() => {
-    if (lang === "es") {
-      return {
-        title: "Editar lote",
-        sub: "Actualiza datos del lote y agrega fotos si faltaban.",
-        notFound: "No se encontró el lote:",
-        save: "Guardar cambios",
-        cancel: "Cancelar",
-        productEn: "Producto (EN)",
-        productEs: "Producto (ES)",
-        origin: "Origen",
-        harvestDate: "Fecha de cosecha",
-        batch: "Batch",
-        notes: "Notas (opcional)",
-        dateHint: "Formato: YYYY-MM-DD",
-        missingFields: "Faltan campos",
-        fillRequired:
-          "Completa los campos requeridos: Producto (EN o ES), Origen, Fecha y Batch.",
-        invalidDate: "Fecha inválida",
-        invalidDateBody: "Usa el formato YYYY-MM-DD (ej. 2026-01-10).",
-
-        photosTitle: "Fotos del producto",
-        photosSub:
-          "Sube fotos del producto para que el cliente vea evidencia del lote.",
-        upload: "Subir fotos",
-        remove: "Quitar",
-        max5: "Máximo 5 fotos (demo).",
-        permDenied:
-          "Permiso denegado. Activa acceso a Fotos en Settings y vuelve a intentar.",
-        pickFailed: "No se pudieron seleccionar fotos.",
-        saved: "Guardado",
-        savedBody: "Cambios guardados para:",
-      };
-    }
-    return {
-      title: "Edit lot",
-      sub: "Update lot details and add photos if needed.",
-      notFound: "Lot not found:",
-      save: "Save changes",
-      cancel: "Cancel",
-      productEn: "Product (EN)",
-      productEs: "Product (ES)",
-      origin: "Origin",
-      harvestDate: "Harvest date",
-      batch: "Batch",
-      notes: "Notes (optional)",
-      dateHint: "Format: YYYY-MM-DD",
-      missingFields: "Missing fields",
-      fillRequired:
-        "Please fill required fields: Product (EN or ES), Origin, Date and Batch.",
-      invalidDate: "Invalid date",
-      invalidDateBody: "Use YYYY-MM-DD (e.g. 2026-01-10).",
-
-      photosTitle: "Product photos",
-      photosSub: "Upload photos so clients can see evidence for this lot/batch.",
-      upload: "Upload photos",
-      remove: "Remove",
-      max5: "Max 5 photos (demo).",
-      permDenied:
-        "Permission denied. Enable Photos access in Settings and try again.",
-      pickFailed: "Could not pick photos.",
-      saved: "Saved",
-      savedBody: "Changes saved for:",
-    };
-  }, [lang, tt.tryAgain, tt.wrongPin]);
-
-  // ✅ init form from lot
   const [productEn, setProductEn] = useState("");
   const [productEs, setProductEs] = useState("");
   const [origin, setOrigin] = useState("");
   const [harvestDate, setHarvestDate] = useState("");
   const [batch, setBatch] = useState("");
   const [notes, setNotes] = useState("");
-
   const [photoUris, setPhotoUris] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [initializedScope, setInitializedScope] = useState<string | null>(null);
+
+  const initializedRef = useRef<string | null>(null);
+  const operationRef = useRef(false);
+  const aliveRef = useRef(false);
+  const scopeRef = useRef(scope);
+  scopeRef.current = scope;
 
   useEffect(() => {
-    if (!lot) return;
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
+    };
+  }, []);
 
-    setProductEn(s((lot as any).product_en));
-    setProductEs(s((lot as any).product_es));
-    setOrigin(s(lot.origin));
-    setHarvestDate(s(lot.harvestDate));
-    setBatch(s(lot.batch));
-    setNotes(s((lot as any).notes));
+  useEffect(() => {
+    if (!scope || !lot || initializedRef.current === scope) return;
+    initializedRef.current = scope;
+    setProductEn(lot.product_en);
+    setProductEs(lot.product_es);
+    setOrigin(lot.origin);
+    setHarvestDate(lot.harvestDate);
+    setBatch(lot.batch);
+    setNotes(lot.notes ?? "");
+    setPhotoUris(lot.photos ?? []);
+    setFormError(null);
+    setInitializedScope(scope);
+  }, [scope, lot]);
 
-    const existingPhotos = Array.isArray((lot as any).photos) ? (lot as any).photos : [];
-    setPhotoUris(
-      existingPhotos
-        .map((u: any) => s(u))
-        .filter(Boolean)
-        .slice(0, 5)
-    );
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lot?.id]);
-
-  const requestPhotoPermissionIfNeeded = async () => {
-    if (Platform.OS === "web") return true;
-
-    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (status !== "granted") {
-      Alert.alert("AgriTrace", ui.permDenied);
-      return false;
+  const onCancel = () => {
+    if (operationRef.current) return;
+    if (lotId) {
+      router.replace({ pathname: "/lot/[id]", params: { id: lotId } });
+    } else {
+      router.replace("/catalog");
     }
-    return true;
   };
 
-  const onPickPhotos = async () => {
+  const pickPhotos = async () => {
+    if (operationRef.current || !scope || photoUris.length >= 12) return;
+    const requestScope = scope;
+    operationRef.current = true;
+    setBusy(true);
+    setFormError(null);
+
     try {
-      const ok = await requestPhotoPermissionIfNeeded();
-      if (!ok) return;
-
-      const remaining = Math.max(0, 5 - photoUris.length);
-      if (remaining <= 0) return;
-
-      const res = await ImagePicker.launchImageLibraryAsync({
+      if (Platform.OS !== "web") {
+        const permission =
+          await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (permission.status !== "granted") {
+          throw new Error(
+            es ? "Activa el permiso de fotos." : "Enable photo access."
+          );
+        }
+      }
+      const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
         quality: 0.85,
         allowsEditing: false,
-        allowsMultipleSelection: true as any,
-        selectionLimit: remaining as any,
+        allowsMultipleSelection: true,
+        selectionLimit: 12 - photoUris.length,
+      });
+      if (result.canceled) return;
+
+      const photos = (
+        await Promise.all(result.assets.map(persistPickedAsset))
+      ).filter((uri): uri is string => !!uri);
+
+      if (aliveRef.current && scopeRef.current === requestScope) {
+        setPhotoUris((previous) =>
+          Array.from(new Set([...previous, ...photos])).slice(0, 12)
+        );
+      }
+    } catch (error) {
+      if (aliveRef.current && scopeRef.current === requestScope) {
+        setFormError(
+          error instanceof Error
+            ? error.message
+            : es ? "No se pudieron seleccionar fotos." : "Could not select photos."
+        );
+      }
+    } finally {
+      operationRef.current = false;
+      if (aliveRef.current) setBusy(false);
+    }
+  };
+
+  const onSave = async () => {
+    if (
+      operationRef.current ||
+      !scope ||
+      !lot ||
+      initializedScope !== scope ||
+      !allowed
+    ) {
+      return;
+    }
+
+    const pe = productEn.trim();
+    const ps = productEs.trim();
+    const o = origin.trim();
+    const h = harvestDate.trim();
+    const b = batch.trim();
+
+    if ((!pe && !ps) || !o || !h || !b) {
+      setFormError(tt.fillRequired);
+      return;
+    }
+
+    const date = new Date(`${h}T00:00:00.000Z`);
+    if (
+      !isValidDateYYYYMMDD(h) ||
+      !Number.isFinite(date.getTime()) ||
+      date.toISOString().slice(0, 10) !== h ||
+      h.startsWith("0000-")
+    ) {
+      setFormError(tt.dateFormatHint);
+      return;
+    }
+
+    const requestScope = scope;
+    operationRef.current = true;
+    setBusy(true);
+    setFormError(null);
+
+    try {
+      const result = await updateLot(lot.id, {
+        product_en: pe || ps,
+        product_es: ps || pe,
+        origin: o,
+        harvestDate: h,
+        batch: b,
+        notes: notes.trim() || undefined,
+        photos: photoUris,
       });
 
-      if (res.canceled) return;
+      if (!aliveRef.current || scopeRef.current !== requestScope) return;
+      if (!result.ok) {
+        setFormError(result.error);
+        return;
+      }
 
-      const assets = (res.assets ?? []).filter(Boolean);
-      if (assets.length === 0) return;
-
-      const persisted = (
-        await Promise.all(assets.map((a) => persistPickedAsset(a)))
-      ).filter((u): u is string => !!u);
-
-      if (persisted.length === 0) return;
-
-      setPhotoUris((prev) => {
-        const next = [...prev, ...persisted];
-        const uniq = Array.from(new Set(next));
-        return uniq.slice(0, 5);
+      if (Platform.OS === "web") {
+        const browser = globalThis as unknown as {
+          alert?: (message: string) => void;
+        };
+        browser.alert?.(
+          `${es ? "Cambios guardados" : "Changes saved"}: ${result.lot.id}`
+        );
+      } else {
+        Alert.alert(
+          es ? "Cambios guardados" : "Changes saved",
+          result.lot.id
+        );
+      }
+      router.replace({
+        pathname: "/lot/[id]",
+        params: { id: result.lot.id },
       });
     } catch {
-      Alert.alert("AgriTrace", ui.pickFailed);
+      if (aliveRef.current && scopeRef.current === requestScope) {
+        setFormError(
+          es ? "No se pudieron guardar los cambios." : "Could not save changes."
+        );
+      }
+    } finally {
+      operationRef.current = false;
+      if (aliveRef.current) setBusy(false);
     }
   };
 
-  const onRemovePhoto = (uri: string) => {
-    setPhotoUris((prev) => prev.filter((x) => x !== uri));
-  };
+  if (isLoading) {
+    return <View style={styles.page}><ActivityIndicator /></View>;
+  }
+  if (!isAuthenticated) return <Redirect href="/login" />;
+  if (!hasActiveMembership || !organization) {
+    return <Redirect href="/organization-setup" />;
+  }
 
-  const onCancel = () => {
-    if (!lotId) {
-      router.replace("/catalog");
-      return;
-    }
-    router.replace({ pathname: "/lot/[id]", params: { id: lotId } } as any);
-  };
+  const title = es ? "Editar lote" : "Edit lot";
+  const unavailable =
+    !allowed
+      ? es ? "No tienes permiso para editar lotes." : "You cannot edit lots."
+      : lotsError
+        ? lotsError
+        : !lot
+          ? es ? "El lote no está disponible." : "This lot is unavailable."
+          : null;
 
-  const onSave = () => {
-    if (!lotId || !lot) {
-      router.replace("/catalog");
-      return;
-    }
-
-    const pe = s(productEn);
-    const ps = s(productEs);
-    const o = s(origin);
-    const h = s(harvestDate);
-    const b = s(batch);
-    const n = s(notes);
-
-    if (!o || !h || !b || (!pe && !ps)) {
-      Alert.alert(ui.missingFields, ui.fillRequired);
-      return;
-    }
-
-    if (!isValidDateYYYYMMDD(h)) {
-      Alert.alert(ui.invalidDate, ui.invalidDateBody);
-      return;
-    }
-
-    // ✅ If only one product is filled, mirror to the other
-    const finalEn = pe || ps;
-    const finalEs = ps || pe;
-
-    updateLot(lotId, {
-      product_en: finalEn,
-      product_es: finalEs,
-      origin: o,
-      harvestDate: h,
-      batch: b,
-      notes: n || undefined,
-      photos: photoUris,
-    });
-
-    if (Platform.OS === "web") {
-      // @ts-ignore
-      globalThis?.alert?.(`${ui.saved}: ${lotId}`);
-    } else {
-      Alert.alert(ui.saved, `${ui.savedBody} ${lotId}`);
-    }
-
-    router.replace({ pathname: "/lot/[id]", params: { id: lotId } } as any);
-  };
-
-  // If lot missing
-  if (!lotId || !lot) {
+  if (isLoadingLots || unavailable || initializedScope !== scope) {
     return (
       <View style={styles.page}>
-        <View style={styles.headerRow}>
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => router.replace("/catalog")}
+          style={styles.backBtn}
+        >
+          <Text style={styles.backBtnText}>{tt.back}</Text>
+        </Pressable>
+        <Text style={styles.title}>{title}</Text>
+        {isLoadingLots && allowed ? (
+          <ActivityIndicator />
+        ) : unavailable ? (
+          <Text accessibilityRole="alert" style={styles.errorText}>
+            {unavailable}
+          </Text>
+        ) : (
+          <ActivityIndicator />
+        )}
+        {lotsError && allowed ? (
           <Pressable
-            onPress={() => router.replace("/catalog")}
-            style={({ pressed }) => [styles.backBtn, pressed && styles.pressed]}
+            accessibilityRole="button"
+            onPress={() => void refreshLots()}
+            style={styles.backBtn}
           >
-            <Text style={styles.backBtnText}>← {tt.back}</Text>
+            <Text style={styles.backBtnText}>{es ? "Reintentar" : "Retry"}</Text>
           </Pressable>
-        </View>
-
-        <Text style={styles.title}>{ui.title}</Text>
-        <Text style={styles.errorText}>
-          {ui.notFound} {lotId || "(no id)"}
-        </Text>
+        ) : null}
       </View>
     );
   }
+
+  const fields = [
+    { label: "Producto / Product (EN)", value: productEn, change: setProductEn },
+    { label: "Producto / Product (ES)", value: productEs, change: setProductEs },
+    { label: tt.origin, value: origin, change: setOrigin },
+    { label: tt.harvestDate, value: harvestDate, change: setHarvestDate },
+    { label: tt.batch, value: batch, change: setBatch },
+  ];
 
   return (
     <KeyboardAvoidingView
@@ -364,301 +387,282 @@ export default function EditLotScreen() {
     >
       <View style={styles.headerRow}>
         <Pressable
+          accessibilityRole="button"
+          disabled={busy}
           onPress={onCancel}
-          style={({ pressed }) => [styles.backBtn, pressed && styles.pressed]}
+          style={styles.backBtn}
         >
-          <Text style={styles.backBtnText}>← {ui.cancel}</Text>
+          <Text style={styles.backBtnText}>{es ? "Cancelar" : "Cancel"}</Text>
         </Pressable>
       </View>
 
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator>
-        <Text style={styles.title}>{ui.title}</Text>
-        <Text style={styles.sub}>{ui.sub}</Text>
+      <ScrollView
+        contentContainerStyle={styles.content}
+        keyboardShouldPersistTaps="handled"
+      >
+        <Text style={styles.eyebrow}>
+          {es ? "GESTIÓN DE LOTES" : "LOT MANAGEMENT"}
+        </Text>
+        <Text style={styles.title}>{title}</Text>
+        <Text style={styles.description}>
+          {es
+            ? "Actualiza los datos y las fotos del lote."
+            : "Update the lot details and photos."}
+        </Text>
+        <Text style={styles.sub}>{lotId}</Text>
+        <Text style={styles.sub}>
+          {es ? "Cosecha de origen" : "Source harvest"}: {lot?.harvest_id}
+        </Text>
 
-        {/* Product EN */}
-        <Text style={styles.label}>{ui.productEn}</Text>
-        <TextInput
-          value={productEn}
-          onChangeText={setProductEn}
-          placeholder={lang === "es" ? "ej. Papaya" : "e.g. Papaya"}
-          placeholderTextColor={c.muted}
-          style={styles.input}
-        />
+        {fields.map((field, index) => (
+          <View key={index}>
+            <Text style={styles.label}>{field.label}</Text>
+            <TextInput
+              value={field.value}
+              onChangeText={field.change}
+              editable={!busy}
+              style={styles.input}
+            />
+          </View>
+        ))}
 
-        {/* Product ES */}
-        <Text style={styles.label}>{ui.productEs}</Text>
-        <TextInput
-          value={productEs}
-          onChangeText={setProductEs}
-          placeholder={lang === "es" ? "ej. Papaya" : "e.g. Papaya"}
-          placeholderTextColor={c.muted}
-          style={styles.input}
-        />
-
-        <Text style={styles.label}>{ui.origin}</Text>
-        <TextInput
-          value={origin}
-          onChangeText={setOrigin}
-          placeholder={lang === "es" ? "ej. Santa Ana, El Salvador" : "e.g. Santa Ana, El Salvador"}
-          placeholderTextColor={c.muted}
-          style={styles.input}
-        />
-
-        <Text style={styles.label}>{ui.harvestDate}</Text>
-        <TextInput
-          value={harvestDate}
-          onChangeText={setHarvestDate}
-          placeholder="YYYY-MM-DD"
-          placeholderTextColor={c.muted}
-          autoCapitalize="none"
-          style={styles.input}
-        />
-        <Text style={styles.hint}>{ui.dateHint}</Text>
-
-        <Text style={styles.label}>{ui.batch}</Text>
-        <TextInput
-          value={batch}
-          onChangeText={setBatch}
-          placeholder={lang === "es" ? "ej. BATCH-A1" : "e.g. BATCH-A1"}
-          placeholderTextColor={c.muted}
-          autoCapitalize="none"
-          style={styles.input}
-        />
-
-        <Text style={styles.label}>{ui.notes}</Text>
+        <Text style={styles.hint}>YYYY-MM-DD</Text>
+        <Text style={styles.label}>{tt.notesOptional}</Text>
         <TextInput
           value={notes}
           onChangeText={setNotes}
-          placeholder={lang === "es" ? "Opcional" : "Optional"}
-          placeholderTextColor={c.muted}
-          style={[styles.input, styles.notes]}
+          editable={!busy}
           multiline
+          style={[styles.input, styles.notes]}
         />
 
-        {/* Photos */}
         <View style={styles.photosBox}>
-          <Text style={styles.photosTitle}>{ui.photosTitle}</Text>
-          <Text style={styles.photosSub}>
-            {ui.photosSub} {ui.max5}
+          <Text style={styles.photosTitle}>
+            {es ? "Fotos" : "Photos"} ({photoUris.length}/12)
           </Text>
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => void pickPhotos()}
+            disabled={busy || photoUris.length >= 12}
+            style={[styles.photoBtn, busy ? styles.disabled : null]}
+          >
+            <Text style={styles.photoBtnText}>
+              {es ? "Agregar fotos" : "Add photos"}
+            </Text>
+          </Pressable>
 
-          <View style={styles.photosActions}>
-            <Pressable
-              onPress={onPickPhotos}
-              style={({ pressed }) => [
-                styles.photoBtn,
-                pressed && styles.pressed,
-                photoUris.length >= 5 && styles.disabled,
-              ]}
-              disabled={photoUris.length >= 5}
-            >
-              <Text style={styles.photoBtnText}>{ui.upload}</Text>
-            </Pressable>
-
-            <Text style={styles.photosCount}>{photoUris.length}/5</Text>
+          <View style={styles.photosRow}>
+            {photoUris.map((uri, index) => (
+              <View key={`${uri}:${index}`} style={styles.photoCard}>
+                <Image source={{ uri }} style={styles.photoThumb} />
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={busy}
+                  onPress={() => setPhotoUris((previous) =>
+                    previous.filter((item) => item !== uri))}
+                  style={styles.removeBtn}
+                >
+                  <Text style={styles.removeBtnText}>
+                    {es ? "Quitar" : "Remove"}
+                  </Text>
+                </Pressable>
+              </View>
+            ))}
           </View>
-
-          {photoUris.length > 0 ? (
-            <View style={styles.photosRow}>
-              {photoUris.map((uri, idx) => (
-                <View key={`${uri}-${idx}`} style={styles.photoCard}>
-                  <Image source={{ uri }} style={styles.photoThumb} />
-                  <Pressable
-                    onPress={() => onRemovePhoto(uri)}
-                    style={({ pressed }) => [styles.removeBtn, pressed && styles.pressed]}
-                  >
-                    <Text style={styles.removeBtnText}>{ui.remove}</Text>
-                  </Pressable>
-                </View>
-              ))}
-            </View>
-          ) : null}
         </View>
 
+        {formError ? (
+          <Text accessibilityRole="alert" style={[styles.errorText, { color: c.red }]}>
+            {formError}
+          </Text>
+        ) : null}
+
         <Pressable
-          onPress={onSave}
-          style={({ pressed }) => [styles.saveBtn, pressed && styles.pressed]}
+          accessibilityRole="button"
+          onPress={() => void onSave()}
+          disabled={busy}
+          style={[styles.saveBtn, busy ? styles.disabled : null]}
         >
-          <Text style={styles.saveBtnText}>{ui.save}</Text>
+          <Text style={styles.saveBtnText}>
+            {busy
+              ? es ? "Procesando..." : "Processing..."
+              : es ? "Guardar cambios" : "Save changes"}
+          </Text>
         </Pressable>
       </ScrollView>
     </KeyboardAvoidingView>
   );
 }
 
-type ThemeColors = ReturnType<typeof getTheme>["colors"];
-const makeStyles = (c: ThemeColors) =>
-  StyleSheet.create({
-    page: { flex: 1, backgroundColor: c.bg, padding: 20 },
 
-    headerRow: {
-      flexDirection: "row",
-      justifyContent: "space-between",
-      alignItems: "center",
-      marginBottom: 14,
-    },
-    backBtn: {
-      backgroundColor: c.card,
-      borderColor: c.border,
-      borderWidth: 1,
-      paddingVertical: 10,
-      paddingHorizontal: 14,
-      borderRadius: 999,
-      ...(Platform.OS === "web" ? ({ cursor: "pointer" } as any) : null),
-    },
-    backBtnText: { color: c.text, fontWeight: "900", letterSpacing: 0.6 },
-    pressed: { opacity: 0.9, transform: [{ scale: 0.99 }] },
-    disabled: { opacity: 0.55 },
-
-    content: { paddingBottom: 40 },
-
-    title: {
-      color: c.text,
-      fontSize: 34,
-      fontWeight: "900",
-      letterSpacing: 1,
-      marginTop: 2,
-    },
-    sub: {
-      color: c.muted,
-      marginTop: 6,
-      marginBottom: 12,
-      fontSize: 13,
-      letterSpacing: 0.3,
-      lineHeight: 18,
-    },
-
-    label: {
-      marginTop: 10,
-      color: c.text,
-      fontWeight: "900",
-      letterSpacing: 0.4,
-      fontSize: 12,
-    },
-    input: {
-      marginTop: 6,
-      borderWidth: 1,
-      borderColor: c.border,
-      backgroundColor: c.card,
-      color: c.text,
-      borderRadius: 14,
-      paddingVertical: 12,
-      paddingHorizontal: 12,
-      fontSize: 14,
-      letterSpacing: 0.3,
-    },
-    notes: { minHeight: 90, textAlignVertical: "top" },
-    hint: {
-      marginTop: 6,
-      color: c.muted,
-      fontWeight: "800",
-      letterSpacing: 0.2,
-      fontSize: 12,
-    },
-
-    photosBox: {
-      marginTop: 14,
-      borderWidth: 1,
-      borderColor: c.border,
-      backgroundColor: c.card,
-      borderRadius: 14,
-      padding: 12,
-    },
-    photosTitle: {
-      color: c.text,
-      fontWeight: "900",
-      letterSpacing: 0.4,
-      fontSize: 13,
-    },
-    photosSub: {
-      marginTop: 6,
-      color: c.muted,
-      fontWeight: "700",
-      letterSpacing: 0.2,
-      lineHeight: 18,
-    },
-    photosActions: {
-      marginTop: 10,
-      flexDirection: "row",
-      alignItems: "center",
-      justifyContent: "space-between",
-      gap: 10,
-      flexWrap: "wrap",
-    },
-    photoBtn: {
-      backgroundColor: c.segmentBg,
-      borderWidth: 1,
-      borderColor: c.border,
-      paddingVertical: 10,
-      paddingHorizontal: 12,
-      borderRadius: 999,
-      ...(Platform.OS === "web" ? ({ cursor: "pointer" } as any) : null),
-    },
-    photoBtnText: {
-      color: c.text,
-      fontWeight: "900",
-      letterSpacing: 0.4,
-      fontSize: 12,
-    },
-    photosCount: {
-      color: c.muted,
-      fontWeight: "900",
-      letterSpacing: 0.2,
-      fontSize: 12,
-    },
-    photosRow: {
-      marginTop: 12,
-      flexDirection: "row",
-      gap: 10,
-      flexWrap: "wrap",
-    },
-    photoCard: {
-      width: 140,
-      borderRadius: 12,
-      overflow: "hidden",
-      borderWidth: 1,
-      borderColor: c.border,
-      backgroundColor: c.segmentBg,
-    },
-    photoThumb: { width: "100%", height: 120, resizeMode: "cover" },
-    removeBtn: {
-      paddingVertical: 8,
-      paddingHorizontal: 10,
-      borderTopWidth: 1,
-      borderTopColor: c.border,
-      backgroundColor: c.card,
-      alignItems: "center",
-      ...(Platform.OS === "web" ? ({ cursor: "pointer" } as any) : null),
-    },
-    removeBtnText: {
-      color: c.text,
-      fontWeight: "900",
-      letterSpacing: 0.3,
-      fontSize: 12,
-    },
-
-    saveBtn: {
-      marginTop: 16,
-      backgroundColor: c.green,
-      borderColor: c.green,
-      borderWidth: 1,
-      paddingVertical: 12,
-      paddingHorizontal: 14,
-      borderRadius: 14,
-      alignItems: "center",
-      ...(Platform.OS === "web" ? ({ cursor: "pointer" } as any) : null),
-    },
-    saveBtnText: {
-      color: "white",
-      fontWeight: "900",
-      letterSpacing: 0.6,
-      fontSize: 14,
-    },
-
-    errorText: {
-      marginTop: 10,
-      color: c.muted,
-      fontWeight: "800",
-      letterSpacing: 0.3,
-    },
-  });
+const styles = StyleSheet.create({
+  page: {
+    flex: 1,
+    backgroundColor: colors.light.background,
+  },
+  headerRow: {
+    width: "100%",
+    maxWidth: layout.maxContentWidth,
+    alignSelf: "center",
+    paddingHorizontal: layout.screenPadding,
+    paddingTop: spacing.xl,
+    paddingBottom: spacing.md,
+    flexDirection: "row",
+  },
+  content: {
+    width: "100%",
+    maxWidth: layout.maxContentWidth,
+    alignSelf: "center",
+    paddingHorizontal: layout.screenPadding,
+    paddingBottom: spacing.xxl,
+  },
+  eyebrow: {
+    color: colors.brand.primary,
+    fontSize: typography.size.xs,
+    fontWeight: typography.weight.bold,
+    letterSpacing: 2,
+    marginBottom: spacing.sm,
+  },
+  title: {
+    color: colors.light.text,
+    fontSize: typography.size.xxl,
+    fontWeight: typography.weight.extraBold,
+  },
+  description: {
+    color: colors.light.textSecondary,
+    fontSize: typography.size.md,
+    lineHeight: 25,
+    marginTop: spacing.sm,
+  },
+  sub: {
+    color: colors.light.textSecondary,
+    fontSize: typography.size.sm,
+    lineHeight: 23,
+    marginTop: spacing.sm,
+    marginBottom: spacing.md,
+  },
+  label: {
+    color: colors.light.text,
+    fontSize: typography.size.sm,
+    fontWeight: typography.weight.semibold,
+    marginTop: spacing.lg,
+    marginBottom: spacing.sm,
+  },
+  input: {
+    minHeight: 50,
+    borderWidth: 1,
+    borderColor: colors.light.border,
+    backgroundColor: colors.light.surface,
+    color: colors.light.text,
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.md,
+    fontSize: typography.size.md,
+    marginBottom: spacing.sm,
+  },
+  notes: {
+    minHeight: 120,
+    textAlignVertical: "top",
+  },
+  backBtn: {
+    minHeight: 48,
+    justifyContent: "center",
+    paddingHorizontal: spacing.md,
+    borderWidth: 1,
+    borderColor: colors.light.border,
+    borderRadius: radius.md,
+    backgroundColor: colors.light.surface,
+  },
+  backBtnText: {
+    color: colors.brand.primary,
+    fontSize: typography.size.sm,
+    fontWeight: typography.weight.semibold,
+  },
+  photosBox: {
+    marginTop: spacing.lg,
+    marginBottom: spacing.md,
+    borderWidth: 1,
+    borderColor: colors.light.border,
+    borderRadius: radius.lg,
+    backgroundColor: colors.light.surface,
+    padding: spacing.lg,
+    gap: spacing.md,
+  },
+  photosTitle: {
+    color: colors.light.text,
+    fontSize: typography.size.lg,
+    fontWeight: typography.weight.bold,
+  },
+  photoBtn: {
+    minHeight: 48,
+    alignSelf: "flex-start",
+    justifyContent: "center",
+    paddingHorizontal: spacing.md,
+    borderWidth: 1,
+    borderColor: colors.brand.primary,
+    borderRadius: radius.md,
+    backgroundColor: colors.brand.primaryLight,
+  },
+  photoBtnText: {
+    color: colors.brand.primary,
+    fontSize: typography.size.sm,
+    fontWeight: typography.weight.semibold,
+  },
+  photosRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: spacing.md,
+  },
+  photoCard: {
+    width: 140,
+    borderWidth: 1,
+    borderColor: colors.light.border,
+    borderRadius: radius.md,
+    overflow: "hidden",
+  },
+  photoThumb: {
+    width: "100%",
+    height: 120,
+    resizeMode: "cover",
+  },
+  removeBtn: {
+    minHeight: 48,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.light.surfaceSecondary,
+  },
+  removeBtnText: {
+    color: colors.light.textSecondary,
+    fontSize: typography.size.sm,
+    fontWeight: typography.weight.semibold,
+  },
+  saveBtn: {
+    minHeight: 52,
+    marginTop: spacing.md,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+    backgroundColor: colors.brand.primary,
+    borderRadius: radius.md,
+  },
+  saveBtnText: {
+    color: colors.light.surface,
+    fontSize: typography.size.md,
+    fontWeight: typography.weight.bold,
+  },
+  disabled: {
+    opacity: 0.5,
+  },
+  hint: {
+    color: colors.light.textSecondary,
+    fontSize: typography.size.xs,
+    marginTop: spacing.xs,
+  },
+  errorText: {
+    color: colors.light.error,
+    fontSize: typography.size.sm,
+    lineHeight: 23,
+    marginTop: spacing.md,
+  },
+});

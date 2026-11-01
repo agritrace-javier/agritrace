@@ -7,6 +7,10 @@ import type { Lang } from "./i18n";
  * - createdAt/photos are optional for backward compatibility
  */
 export type Lot = {
+  organization_id?: string;
+  harvest_id?: string;
+  owner_id?: string;
+  is_active?: boolean;
   id: string;
   product_en: string;
   product_es: string;
