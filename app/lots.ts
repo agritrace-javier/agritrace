@@ -11,6 +11,7 @@ export type Lot = {
   harvest_id?: string;
   owner_id?: string;
   is_active?: boolean;
+  is_public?: boolean;
   id: string;
   product_en: string;
   product_es: string;

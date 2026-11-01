@@ -6,6 +6,7 @@ export type OrganizationLot = Lot & {
   harvest_id: string;
   owner_id: string;
   is_active: boolean;
+  is_public: boolean;
 };
 
 export type CreateLotInput = {
@@ -30,6 +31,7 @@ export type UpdateLotInput = {
   notes?: string | null;
   photos?: string[];
   is_active?: boolean;
+  is_public?: boolean;
 };
 
 type LotRow = {
@@ -47,6 +49,7 @@ type LotRow = {
   photos: string[];
   created_at: number | string | null;
   is_active: boolean;
+  is_public: boolean;
 };
 
 function toLot(row: LotRow): OrganizationLot {
@@ -71,6 +74,7 @@ function toLot(row: LotRow): OrganizationLot {
         ? createdAt
         : undefined,
     is_active: row.is_active,
+    is_public: row.is_public,
   };
 }
 
@@ -178,6 +182,7 @@ export async function updateOrganizationLot(
   }
   if (input.photos !== undefined) payload.photos = input.photos;
   if (input.is_active !== undefined) payload.is_active = input.is_active;
+  if (input.is_public !== undefined) payload.is_public = input.is_public;
 
   if (Object.keys(payload).length === 0) {
     throw new Error("No lot changes were provided.");

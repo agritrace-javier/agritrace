@@ -1,390 +1,386 @@
-// app/scan.tsx
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { useRouter } from "expo-router";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import {
-    Alert,
-    Platform,
-    Pressable,
-    StyleSheet,
-    Text,
-    TextInput,
-    View,
+  ActivityIndicator,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
 } from "react-native";
-import type { Lang } from "./i18n";
-import { t as I18N } from "./i18n";
+import {
+  colors,
+  layout,
+  radius,
+  spacing,
+  typography,
+} from "../src/theme/tokens";
 import { useLots } from "./lots-store";
-import { getTheme } from "./theme";
 
-type TT = (typeof I18N)[Lang];
+function validLotId(value: string): string | null {
+  const id = value.trim().toUpperCase();
+  return /^LOT-[A-Z0-9-]{1,123}$/.test(id) ? id : null;
+}
 
-function safeDecode(s: string) {
+function extractLotId(value: string): string | null {
+  const raw = value.trim();
+  const direct = validLotId(raw);
+  if (direct) return direct;
+
   try {
-    return decodeURIComponent(s);
+    const url = new URL(raw);
+    if (!["http:", "https:", "exp:", "exps:", "agritrace:"].includes(url.protocol)) {
+      return null;
+    }
+
+    const path =
+      url.protocol === "agritrace:"
+        ? `/${url.hostname}${url.pathname}`
+        : url.pathname;
+
+    const match = path.match(
+      /^\/(?:--\/)?(?:public\/)?lot\/([^/]+)\/?$/i
+    );
+
+    return match ? validLotId(decodeURIComponent(match[1])) : null;
   } catch {
-    return s;
+    return null;
   }
-}
-
-function cleanLotId(raw: string) {
-  const id = safeDecode(String(raw || "").trim());
-  return id.toUpperCase();
-}
-
-function extractLotIdFromScanned(data: string): string | null {
-  if (!data) return null;
-
-  const s = String(data).trim();
-
-  // ✅ If QR is EXACTLY the lot id
-  if (/^LOT-[A-Z0-9-]+$/i.test(s)) return cleanLotId(s);
-
-  // ✅ Common URL forms:
-  // - https://xxxx.ngrok-free.dev/lot/LOT-0001
-  // - https://xxxx.ngrok-free.dev/--/lot/LOT-0001
-  // - agritrace://lot/LOT-0001
-  // - agritrace://--/lot/LOT-0001
-  const lower = s.toLowerCase();
-
-  // Look for "/--/lot/" first (Expo Router tunnel format)
-  const idxTunnel = lower.lastIndexOf("/--/lot/");
-  if (idxTunnel >= 0) {
-    const tail = s.slice(idxTunnel + "/--/lot/".length);
-    const clean = tail.split(/[?#/]/)[0];
-    if (clean) return cleanLotId(clean);
-  }
-
-  // Then standard "/lot/"
-  const idx = lower.lastIndexOf("/lot/");
-  if (idx >= 0) {
-    const tail = s.slice(idx + "/lot/".length);
-    const clean = tail.split(/[?#/]/)[0];
-    if (clean) return cleanLotId(clean);
-  }
-
-  // ✅ Sometimes: "lot:LOT-0001" or "lot=LOT-0001"
-  const m2 = s.match(/lot[:=]\s*(LOT-[A-Z0-9-]+)/i);
-  if (m2?.[1]) return cleanLotId(m2[1]);
-
-  // ✅ Find "LOT-XXXX" anywhere (last resort)
-  const m1 = s.match(/(LOT-[A-Z0-9-]+)/i);
-  if (m1?.[1]) return cleanLotId(m1[1]);
-
-  return null;
 }
 
 export default function ScanScreen() {
   const router = useRouter();
-  const { lang, themeName } = useLots();
-  const tt: TT = I18N[lang];
-
-  const theme = useMemo(() => getTheme(themeName), [themeName]);
-  const c = theme.colors;
-  const styles = useMemo(() => makeStyles(c), [c]);
-
-  // Local strings (bilingual) — no depende de i18n.ts
-  const s = useMemo(() => {
-    if (lang === "es") {
-      return {
-        title: "Escanear QR",
-        webNote:
-          "En web, la cámara puede fallar. Pega un link del lote o el LOT-ID:",
-        webPlaceholder: "https://.../lot/LOT-0001  o  LOT-0001",
-        open: "Abrir",
-        allowCamera: "Permitir cámara",
-        needPermission: "Se necesita permiso de cámara para escanear QR.",
-        loadingPermission: "Cargando permisos de cámara…",
-        pointCamera: "Apunta la cámara al QR",
-        scannedOk: "Escaneado ✓",
-        scanAgain: "Escanear otra vez",
-        notRecognized:
-          "QR no reconocido. Debe contener un LOT-ID o /lot/LOT-XXXX (o /--/lot/LOT-XXXX).",
-        pasteValid: "Pega un link válido o un LOT-ID (ej: LOT-0001).",
-        invalidLot: "Lote inválido",
-        missingLot: "No se pudo extraer el LOT-ID del QR.",
-      };
-    }
-    return {
-      title: "QR Scan",
-      webNote:
-        "On web, camera scanning can be inconsistent. Paste a lot link or LOT-ID:",
-      webPlaceholder: "https://.../lot/LOT-0001  or  LOT-0001",
-      open: "Open",
-      allowCamera: "Allow Camera",
-      needPermission: "Camera permission is required to scan QR codes.",
-      loadingPermission: "Loading camera permissions…",
-      pointCamera: "Point the camera at a QR",
-      scannedOk: "Scanned ✓",
-      scanAgain: "Scan again",
-      notRecognized:
-        "QR not recognized. It must contain a LOT-ID or /lot/LOT-XXXX (or /--/lot/LOT-XXXX).",
-      pasteValid: "Paste a valid lot link or LOT-ID (e.g. LOT-0001).",
-      invalidLot: "Invalid lot",
-      missingLot: "Could not extract LOT-ID from QR.",
-    };
-  }, [lang]);
-
+  const { lang, setLang } = useLots();
+  const es = lang === "es";
   const [permission, requestPermission] = useCameraPermissions();
-  const [scanned, setScanned] = useState(false);
-
-  // Web fallback (paste)
   const [manual, setManual] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [scanned, setScanned] = useState(false);
+  const [requestingPermission, setRequestingPermission] = useState(false);
+  const openingRef = useRef(false);
+  const lastInvalidScanRef = useRef(0);
 
-  // ✅ cooldown to prevent repeated scans/alerts firing
-  const cooldownRef = useRef(false);
-  const cooldown = (ms: number) => {
-    cooldownRef.current = true;
-    setTimeout(() => {
-      cooldownRef.current = false;
-    }, ms);
-  };
+  const openLot = (raw: string, fromCamera: boolean) => {
+    if (openingRef.current) return;
+    const id = extractLotId(raw);
 
-  useEffect(() => {
-    setScanned(false);
-    cooldownRef.current = false;
-  }, []);
-
-  const goBack = () => {
-    setScanned(false);
-    cooldownRef.current = false;
-    router.replace("/catalog");
-  };
-
-  const goToLot = (maybeId: string | null) => {
-    if (!maybeId) {
-      Alert.alert(s.invalidLot, s.missingLot);
+    if (!id) {
+      if (fromCamera) {
+        const now = Date.now();
+        if (now - lastInvalidScanRef.current < 1500) return;
+        lastInvalidScanRef.current = now;
+      }
+      setError(
+        es
+          ? "Usa un ID de lote o un enlace válido de AgriTrace."
+          : "Use a lot ID or a valid AgriTrace lot link."
+      );
       return;
     }
 
-    const clean = maybeId.toUpperCase().trim();
-    if (!/^LOT-[A-Z0-9-]+$/.test(clean)) {
-      Alert.alert(s.invalidLot, s.missingLot);
-      return;
-    }
-
+    openingRef.current = true;
     setScanned(true);
-    router.replace({ pathname: "/lot/[id]", params: { id: clean } } as any);
-  };
+    setError(null);
 
-  const onBarcodeScanned = ({ data }: { data: string }) => {
-    if (scanned) return;
-    if (cooldownRef.current) return;
-
-    const id = extractLotIdFromScanned(data);
-    if (!id) {
-      cooldown(900);
-      Alert.alert("QR", s.notRecognized);
-      return;
+    try {
+      router.replace({
+        pathname: "/public/lot/[id]",
+        params: { id },
+      });
+    } catch {
+      openingRef.current = false;
+      setScanned(false);
+      setError(
+        es ? "No se pudo abrir el lote." : "Could not open the lot."
+      );
     }
-
-    cooldown(1200);
-    goToLot(id);
   };
 
-  const onOpenManual = () => {
-    const id = extractLotIdFromScanned(manual);
-    if (!id) {
-      Alert.alert("QR", s.pasteValid);
-      return;
+  const allowCamera = async () => {
+    if (requestingPermission) return;
+    setRequestingPermission(true);
+    setError(null);
+    try {
+      await requestPermission();
+    } catch {
+      setError(
+        es
+          ? "No se pudo solicitar acceso a la cámara."
+          : "Could not request camera access."
+      );
+    } finally {
+      setRequestingPermission(false);
     }
-    goToLot(id);
-  };
-
-  const renderPermissionBox = (text: string) => {
-    return (
-      <View style={styles.webBox}>
-        <Text style={styles.webText}>{text}</Text>
-        <Pressable
-          onPress={requestPermission}
-          style={({ pressed }) => [
-            styles.primaryBtn,
-            pressed && styles.pressed,
-          ]}
-        >
-          <Text style={styles.primaryBtnText}>{s.allowCamera}</Text>
-        </Pressable>
-      </View>
-    );
   };
 
   return (
-    <View style={styles.page}>
-      <View style={styles.headerRow}>
-        <Pressable
-          onPress={goBack}
-          style={({ pressed }) => [styles.backBtn, pressed && styles.pressed]}
-        >
-          <Text style={styles.backBtnText}>← {tt.back}</Text>
-        </Pressable>
-
-        <Text style={styles.title}>{s.title}</Text>
-      </View>
-
-      {Platform.OS === "web" ? (
-        <View style={styles.webBox}>
-          <Text style={styles.webText}>{s.webNote}</Text>
-
-          <TextInput
-            value={manual}
-            onChangeText={setManual}
-            placeholder={s.webPlaceholder}
-            placeholderTextColor={c.muted}
-            style={styles.input}
-            autoCapitalize="characters"
-            autoCorrect={false}
-          />
-
+    <ScrollView
+      style={styles.screen}
+      contentContainerStyle={styles.content}
+      keyboardShouldPersistTaps="handled"
+    >
+      <View style={styles.container}>
+        <View style={styles.header}>
           <Pressable
-            onPress={onOpenManual}
-            style={({ pressed }) => [
-              styles.primaryBtn,
-              pressed && styles.pressed,
+            accessibilityRole="button"
+            onPress={() => router.replace("/")}
+            style={styles.button}
+          >
+            <Text style={styles.buttonText}>{es ? "Volver" : "Back"}</Text>
+          </Pressable>
+
+          <View style={styles.languageRow}>
+            {(["en", "es"] as const).map((value) => (
+              <Pressable
+                key={value}
+                accessibilityRole="button"
+                accessibilityState={{ selected: lang === value }}
+                onPress={() => setLang(value)}
+                style={[
+                  styles.button,
+                  lang === value ? styles.selected : null,
+                ]}
+              >
+                <Text style={styles.buttonText}>{value.toUpperCase()}</Text>
+              </Pressable>
+            ))}
+          </View>
+        </View>
+
+        <Text style={styles.eyebrow}>
+          {es ? "TRAZABILIDAD DEL PRODUCTO" : "PRODUCT TRACEABILITY"}
+        </Text>
+        <Text style={styles.title}>{es ? "Escanear QR" : "Scan QR"}</Text>
+        <Text style={styles.body}>
+          {es
+            ? "Consulta la información pública de un lote sin iniciar sesión."
+            : "View a lot's public information without signing in."}
+        </Text>
+
+        {error ? (
+          <Text accessibilityRole="alert" style={styles.error}>{error}</Text>
+        ) : null}
+
+        {Platform.OS !== "web" ? (
+          <View style={styles.card}>
+            <Text style={styles.heading}>{es ? "Cámara" : "Camera"}</Text>
+
+            {!permission ? (
+              <ActivityIndicator color={colors.brand.primary} />
+            ) : !permission.granted ? (
+              <>
+                <Text style={styles.body}>
+                  {permission.canAskAgain
+                    ? es
+                      ? "Permite el acceso a la cámara para escanear."
+                      : "Allow camera access to scan."
+                    : es
+                      ? "Activa el permiso de cámara en los ajustes del dispositivo o utiliza la entrada manual."
+                      : "Enable camera permission in device settings or use manual entry."}
+                </Text>
+                {permission.canAskAgain ? (
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => void allowCamera()}
+                    disabled={requestingPermission}
+                    style={styles.primaryButton}
+                  >
+                    <Text style={styles.primaryText}>
+                      {es ? "Permitir cámara" : "Allow camera"}
+                    </Text>
+                  </Pressable>
+                ) : null}
+              </>
+            ) : scanned ? (
+              <Text style={styles.body}>
+                {es ? "Abriendo lote..." : "Opening lot..."}
+              </Text>
+            ) : (
+              <>
+                <View style={styles.cameraFrame}>
+                  <CameraView
+                    style={styles.camera}
+                    facing="back"
+                    barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
+                    onBarcodeScanned={({ data }) => openLot(data, true)}
+                    onMountError={() =>
+                      setError(
+                        es
+                          ? "No se pudo abrir la cámara. Puedes introducir el lote manualmente."
+                          : "Could not open the camera. You can enter the lot manually."
+                      )
+                    }
+                  />
+                </View>
+                <Text style={styles.body}>
+                  {es ? "Apunta la cámara al QR del lote." : "Point the camera at the lot QR."}
+                </Text>
+              </>
+            )}
+          </View>
+        ) : null}
+
+        <View style={styles.card}>
+          <Text style={styles.heading}>
+            {es ? "Abrir por enlace o ID" : "Open by link or ID"}
+          </Text>
+          <Text style={styles.body}>
+            {es
+              ? "Pega el enlace del QR o escribe el identificador del lote."
+              : "Paste the QR link or enter the lot identifier."}
+          </Text>
+          <TextInput
+            accessibilityLabel={es ? "Enlace o ID del lote" : "Lot link or ID"}
+            value={manual}
+            onChangeText={(value) => {
+              setManual(value);
+              setError(null);
+            }}
+            placeholder="LOT-0001"
+            placeholderTextColor={colors.light.textSecondary}
+            autoCapitalize="none"
+            autoCorrect={false}
+            returnKeyType="go"
+            onSubmitEditing={() => openLot(manual, false)}
+            style={styles.input}
+            editable={!scanned}
+          />
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => openLot(manual, false)}
+            disabled={scanned || !manual.trim()}
+            style={[
+              styles.primaryButton,
+              scanned || !manual.trim() ? styles.disabled : null,
             ]}
           >
-            <Text style={styles.primaryBtnText}>{s.open}</Text>
+            <Text style={styles.primaryText}>
+              {es ? "Abrir lote" : "Open lot"}
+            </Text>
           </Pressable>
+          <Text style={styles.note}>
+            {es
+              ? "Solo se muestran lotes publicados y activos."
+              : "Only published active lots are shown."}
+          </Text>
         </View>
-      ) : permission == null ? (
-        <View style={styles.webBox}>
-          <Text style={styles.webText}>{s.loadingPermission}</Text>
-        </View>
-      ) : !permission.granted ? (
-        renderPermissionBox(s.needPermission)
-      ) : (
-        <View style={styles.cameraWrap}>
-          <CameraView
-            style={styles.camera}
-            facing="back"
-            onBarcodeScanned={onBarcodeScanned}
-            barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
-          />
-
-          <View style={styles.scanHint}>
-            <Text style={styles.scanHintText}>{s.pointCamera}</Text>
-            {scanned ? (
-              <Text style={styles.scanHintTextMuted}>{s.scannedOk}</Text>
-            ) : null}
-          </View>
-
-          {scanned ? (
-            <Pressable
-              onPress={() => {
-                setScanned(false);
-                cooldownRef.current = false;
-              }}
-              style={({ pressed }) => [
-                styles.secondaryBtn,
-                pressed && styles.pressed,
-              ]}
-            >
-              <Text style={styles.secondaryBtnText}>{s.scanAgain}</Text>
-            </Pressable>
-          ) : null}
-        </View>
-      )}
-    </View>
+      </View>
+    </ScrollView>
   );
 }
 
-type ThemeColors = ReturnType<typeof getTheme>["colors"];
-
-const makeStyles = (c: ThemeColors) =>
-  StyleSheet.create({
-    page: { flex: 1, backgroundColor: c.bg, padding: 20 },
-    headerRow: {
-      flexDirection: "row",
-      justifyContent: "space-between",
-      alignItems: "center",
-      marginBottom: 12,
-      gap: 10,
-    },
-    title: {
-      color: c.text,
-      fontSize: 18,
-      fontWeight: "900",
-      letterSpacing: 0.6,
-    },
-
-    backBtn: {
-      backgroundColor: c.card,
-      borderColor: c.border,
-      borderWidth: 1,
-      paddingVertical: 10,
-      paddingHorizontal: 14,
-      borderRadius: 999,
-      ...(Platform.OS === "web" ? ({ cursor: "pointer" } as any) : null),
-    },
-    backBtnText: { color: c.text, fontWeight: "900", letterSpacing: 0.6 },
-    pressed: { opacity: 0.92, transform: [{ scale: 0.99 }] },
-
-    webBox: {
-      marginTop: 10,
-      backgroundColor: c.card,
-      borderWidth: 1,
-      borderColor: c.border,
-      borderRadius: 18,
-      padding: 14,
-      gap: 10,
-    },
-    webText: { color: c.text, fontWeight: "800", letterSpacing: 0.2 },
-
-    input: {
-      borderWidth: 1,
-      borderColor: c.border,
-      backgroundColor: c.segmentBg,
-      color: c.text,
-      borderRadius: 12,
-      paddingVertical: 12,
-      paddingHorizontal: 12,
-      fontSize: 14,
-      fontWeight: "800",
-      letterSpacing: 0.2,
-    },
-
-    primaryBtn: {
-      backgroundColor: c.green,
-      borderColor: c.green,
-      borderWidth: 1,
-      paddingVertical: 12,
-      paddingHorizontal: 14,
-      borderRadius: 999,
-      alignItems: "center",
-      ...(Platform.OS === "web" ? ({ cursor: "pointer" } as any) : null),
-    },
-    primaryBtnText: { color: "white", fontWeight: "900", letterSpacing: 0.6 },
-
-    secondaryBtn: {
-      marginTop: 12,
-      borderWidth: 1,
-      borderColor: c.border,
-      backgroundColor: c.card,
-      paddingVertical: 12,
-      paddingHorizontal: 14,
-      borderRadius: 999,
-      alignItems: "center",
-      ...(Platform.OS === "web" ? ({ cursor: "pointer" } as any) : null),
-    },
-    secondaryBtnText: { color: c.text, fontWeight: "900", letterSpacing: 0.6 },
-
-    cameraWrap: {
-      flex: 1,
-      borderRadius: 18,
-      overflow: "hidden",
-      borderWidth: 1,
-      borderColor: c.border,
-      backgroundColor: c.card,
-    },
-    camera: { flex: 1 },
-
-    scanHint: {
-      padding: 12,
-      backgroundColor: c.card,
-      borderTopWidth: 1,
-      borderTopColor: c.border,
-      flexDirection: "row",
-      justifyContent: "space-between",
-      alignItems: "center",
-    },
-    scanHintText: { color: c.text, fontWeight: "900", letterSpacing: 0.2 },
-    scanHintTextMuted: { color: c.muted, fontWeight: "900", letterSpacing: 0.2 },
-  });
+const styles = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: colors.light.background },
+  content: { flexGrow: 1, paddingBottom: spacing.xxl },
+  container: {
+    width: "100%",
+    maxWidth: layout.maxContentWidth,
+    alignSelf: "center",
+    paddingHorizontal: layout.screenPadding,
+    paddingTop: spacing.xl,
+    gap: spacing.md,
+  },
+  header: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "space-between",
+    gap: spacing.md,
+    marginBottom: spacing.md,
+  },
+  languageRow: { flexDirection: "row", gap: spacing.sm },
+  button: {
+    minHeight: 48,
+    minWidth: 48,
+    justifyContent: "center",
+    alignItems: "center",
+    paddingHorizontal: spacing.md,
+    borderWidth: 1,
+    borderColor: colors.light.border,
+    borderRadius: radius.md,
+    backgroundColor: colors.light.surface,
+  },
+  buttonText: {
+    color: colors.brand.primary,
+    fontSize: typography.size.sm,
+    fontWeight: typography.weight.semibold,
+  },
+  selected: {
+    borderColor: colors.brand.primary,
+    backgroundColor: colors.brand.primaryLight,
+  },
+  eyebrow: {
+    color: colors.brand.primary,
+    fontSize: typography.size.xs,
+    fontWeight: typography.weight.bold,
+    letterSpacing: 2,
+  },
+  title: {
+    color: colors.light.text,
+    fontSize: typography.size.xxl,
+    fontWeight: typography.weight.extraBold,
+  },
+  heading: {
+    color: colors.light.text,
+    fontSize: typography.size.lg,
+    fontWeight: typography.weight.bold,
+  },
+  body: {
+    color: colors.light.textSecondary,
+    fontSize: typography.size.md,
+    lineHeight: 25,
+  },
+  card: {
+    backgroundColor: colors.light.surface,
+    borderWidth: 1,
+    borderColor: colors.light.border,
+    borderRadius: radius.lg,
+    padding: spacing.lg,
+    gap: spacing.md,
+  },
+  input: {
+    minHeight: 52,
+    color: colors.light.text,
+    backgroundColor: colors.light.background,
+    borderWidth: 1,
+    borderColor: colors.light.border,
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.md,
+    fontSize: typography.size.md,
+  },
+  primaryButton: {
+    minHeight: 48,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
+    borderRadius: radius.md,
+    backgroundColor: colors.brand.primary,
+  },
+  primaryText: {
+    color: colors.light.surface,
+    fontSize: typography.size.md,
+    fontWeight: typography.weight.bold,
+  },
+  error: {
+    color: colors.light.error,
+    fontSize: typography.size.md,
+    lineHeight: 25,
+  },
+  note: {
+    color: colors.light.textSecondary,
+    fontSize: typography.size.sm,
+    lineHeight: 22,
+  },
+  cameraFrame: {
+    height: 320,
+    width: "100%",
+    borderRadius: radius.lg,
+    overflow: "hidden",
+    backgroundColor: colors.dark.background,
+  },
+  camera: { flex: 1 },
+  disabled: { opacity: 0.5 },
+});

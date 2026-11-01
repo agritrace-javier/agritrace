@@ -292,14 +292,14 @@ export default function LotDetailsScreen() {
 
   // ✅ QR value: REAL HTTPS link (NGROK)
   const qrValue = useMemo(() => {
-    if (!lot) return "";
+    if (!lot || !lot.is_public || !lot.is_active) return "";
     const id = encodeURIComponent(lot.id);
 
     const base = getPublicBaseUrl();
     if (!base) return "";
 
-    return `${base}/lot/${id}`;
-  }, [lot?.id]);
+    return `${base}/public/lot/${id}`;
+  }, [lot?.id, lot?.is_public, lot?.is_active]);
 
   const qrText = useMemo(() => {
     if (lang === "es") {
@@ -646,6 +646,109 @@ export default function LotDetailsScreen() {
       globalThis?.alert?.(`${tt.copied}: ${lotId}`);
     } else {
       Alert.alert(tt.copied, `${tt.lotIdCopied} ${lotId}`);
+    }
+  };
+
+  const [publishing, setPublishing] = useState(false);
+  const [publicationError, setPublicationError] = useState<string | null>(null);
+  const publicationBusyRef = useRef(false);
+
+  useEffect(() => {
+    setPublicationError(null);
+  }, [photoScope]);
+
+  const changePublication = async (
+    requestScope: string,
+    requestLotId: string,
+    publish: boolean
+  ) => {
+    const isCurrent = () => {
+      const current = photoContextRef.current;
+      return current.alive &&
+        current.canEdit &&
+        current.scope === requestScope &&
+        current.lot?.id === requestLotId;
+    };
+
+    if (
+      !isCurrent() ||
+      publicationBusyRef.current ||
+      photoBusyRef.current
+    ) {
+      return;
+    }
+
+    publicationBusyRef.current = true;
+    setPublishing(true);
+    setPublicationError(null);
+
+    try {
+      const result = await updateLot(requestLotId, { is_public: publish });
+      if (!isCurrent()) return;
+      if (!result.ok) setPublicationError(result.error);
+    } catch {
+      if (isCurrent()) {
+        setPublicationError(
+          lang === "es"
+            ? "No se pudo cambiar la publicación."
+            : "Could not change publication."
+        );
+      }
+    } finally {
+      publicationBusyRef.current = false;
+      if (photoContextRef.current.alive) setPublishing(false);
+    }
+  };
+
+  const onChangePublication = () => {
+    const current = photoContextRef.current;
+    if (
+      !current.alive ||
+      !current.canEdit ||
+      !current.lot ||
+      publicationBusyRef.current ||
+      photoBusyRef.current
+    ) {
+      return;
+    }
+
+    const publish = !current.lot.is_public;
+    if (publish && !current.lot.is_active) {
+      setPublicationError(
+        lang === "es"
+          ? "Activa el lote antes de publicarlo."
+          : "Activate the lot before publishing."
+      );
+      return;
+    }
+
+    const requestScope = current.scope;
+    const requestLotId = current.lot.id;
+    const title = publish
+      ? lang === "es" ? "Publicar por QR" : "Publish for QR"
+      : lang === "es" ? "Retirar publicación" : "Unpublish";
+    const message = publish
+      ? lang === "es"
+        ? "Cualquier persona con el enlace podrá ver producto, origen, fecha de cosecha, batch y fotos."
+        : "Anyone with the link will be able to view product, origin, harvest date, batch and photos."
+      : lang === "es"
+        ? "El enlace dejará de mostrar el lote al volver a consultarlo."
+        : "The link will stop showing this lot when requested again.";
+
+    const confirm = () => {
+      void changePublication(requestScope, requestLotId, publish);
+    };
+
+    if (Platform.OS === "web") {
+      const browser = globalThis as unknown as {
+        confirm?: (message: string) => boolean;
+      };
+      if (browser.confirm?.(`${title}\n\n${message}`)) confirm();
+    } else {
+      Alert.alert(title, message, [
+        { text: tt.cancel, style: "cancel" },
+        { text: title, onPress: confirm },
+      ]);
     }
   };
 
@@ -1269,7 +1372,48 @@ export default function LotDetailsScreen() {
               <Text style={styles.sectionTitle}>{qrText.qrTitle}</Text>
               <Text style={styles.sectionSub}>{qrText.qrDesc}</Text>
 
-              {QRCodeCmp ? (
+              <Text style={styles.sectionSub}>
+                {lot.is_public
+                  ? lang === "es" ? "Publicación: activada" : "Publication: enabled"
+                  : lang === "es" ? "Publicación: desactivada" : "Publication: disabled"}
+              </Text>
+
+              {publicationError ? (
+                <Text accessibilityRole="alert" style={[styles.errorText, { color: c.red }]}>
+                  {publicationError}
+                </Text>
+              ) : null}
+
+              {isOperator ? (
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={publishing || busyPhotos || (!lot.is_public && !lot.is_active)}
+                  onPress={onChangePublication}
+                  style={[
+                    styles.secondaryBtn,
+                    { marginTop: spacing.md, alignSelf: "flex-start" },
+                    publishing || busyPhotos || (!lot.is_public && !lot.is_active)
+                      ? styles.disabled
+                      : null,
+                  ]}
+                >
+                  <Text style={styles.secondaryBtnText}>
+                    {publishing
+                      ? lang === "es" ? "Guardando..." : "Saving..."
+                      : lot.is_public
+                        ? lang === "es" ? "Retirar publicación" : "Unpublish"
+                        : lang === "es" ? "Publicar por QR" : "Publish for QR"}
+                  </Text>
+                </Pressable>
+              ) : null}
+
+              {!qrValue ? (
+                <Text style={styles.sectionSub}>
+                  {lang === "es"
+                    ? "El QR estará disponible cuando el lote esté publicado y activo."
+                    : "The QR will be available when the lot is published and active."}
+                </Text>
+              ) : QRCodeCmp ? (
                 <View style={styles.qrWrap}>
                   <QRCodeCmp value={qrValue} size={180} />
                 </View>
@@ -1279,6 +1423,7 @@ export default function LotDetailsScreen() {
 
               <View style={styles.qrActions}>
                 <Pressable
+                  disabled={!qrValue || publishing}
                   onPress={onCopyQrLink}
                   style={({ pressed }) => [styles.qrBtn, pressed && styles.pressed]}
                 >

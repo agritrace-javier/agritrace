@@ -444,7 +444,7 @@ function ScopedLotsProvider({
 
       const allowedKeys = new Set([
         "product_en", "product_es", "origin", "harvestDate",
-        "batch", "notes", "photos", "is_active",
+        "batch", "notes", "photos", "is_active", "is_public",
       ]);
       if (Object.keys(patch).some((key) => !allowedKeys.has(key))) {
         throw new Error("The update includes a protected or unsupported field.");
@@ -460,6 +460,7 @@ function ScopedLotsProvider({
         input.notes = patch.notes ?? null;
       }
       if (patch.is_active !== undefined) input.is_active = patch.is_active;
+      if (patch.is_public !== undefined) input.is_public = patch.is_public;
       if (patch.photos !== undefined) {
         input.photos = await preparePhotos({ ...lot, photos: patch.photos });
       }
